@@ -9,10 +9,10 @@
 ## 📂 디렉토리 구조
 
 iaas_project/
-├── configs/ # VM 정의 XML 파일 등 설정 파일
-├── images/ # VM 생성에 사용되는 OS 이미지 파일
-├── src/ # 모든 파이썬 소스 코드가 위치
-├── scripts/ # Vagrant 프로비저닝 등 스크립트 파일
+├── configs/          # VM 정의 XML 파일 등 설정 파일
+├── images/           # VM 생성에 사용되는 OS 이미지 파일 (git에 포함되지 않음)
+├── src/              # 모든 파이썬 소스 코드가 위치
+├── scripts/          # Vagrant 프로비저닝 등 스크립트 파일
 └── README.md
 
 -   `configs/`: VM의 CPU, 메모리, 디스크 등의 사양을 정의하는 XML 파일이 저장됩니다.
