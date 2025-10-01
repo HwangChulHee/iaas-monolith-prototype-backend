@@ -1,1 +1,7 @@
 images/
+
+# Database Files
+# SQLite 파일 (*.db)이나 프로젝트 루트에 있는 특정 DB 파일 이름을 추가
+iaas_metadata.db
+*.sqlite
+*.sqlite3
