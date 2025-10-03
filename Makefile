@@ -32,7 +32,7 @@ db-init:
 # images 테이블은 유지하고, vms 테이블의 데이터만 삭제합니다.
 db-clean:
 	@echo "🧹 Cleaning up VM records in DB..."
-	$(PYTHON_CMD) -c "import sqlite3; import os; from pathlib import Path; PROJECT_ROOT = Path(__file__).resolve().parent; DB_FILE = str(PROJECT_ROOT / 'iaas_metadata.db'); conn = sqlite3.connect(DB_FILE); conn.cursor().execute('DELETE FROM vms'); conn.commit(); conn.close(); print('DB: vms table cleaned.');"
+	$(PYTHON_CMD) -c "import sqlite3; DB_FILE = 'iaas_metadata.db'; conn = sqlite3.connect(DB_FILE); conn.cursor().execute('DELETE FROM vms'); conn.commit(); conn.close(); print('DB: vms table cleaned.');"
 	
 # VM 정의 및 디스크 삭제: make vm-cleanup
 # libvirt에 등록된 모든 VM 정의를 제거하고, 생성된 디스크 복제본을 삭제합니다. (매우 강력한 청소)

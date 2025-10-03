@@ -1,5 +1,28 @@
 # 개발 로그
 
+## 2025-10-03
+
+#### ✅ 완료된 작업
+- VM 삭제 API (`DELETE /v1/vms/<vm_name>`) 구현 및 테스트 완료.
+- 삭제 로직 구현: Libvirt VM 제거, 디스크 파일(.qcow2) 삭제, DB 레코드 삭제.
+- `app.py` 라우팅 로직 개선 (정규표현식 기반으로 리팩토링).
+- **모니터링 기반 구축**: `list_vms` API가 DB와 libvirt의 실시간 상태를 통합하여 반환하도록 개선.
+
+#### 🐛 트러블슈팅 기록
+- **문제**: VM 삭제 시 디스크 파일에 대한 `Permission denied` 오류 발생.
+  - **원인**: `vagrant` 사용자로 실행된 API 서버가 `root` 소유의 디스크 파일을 삭제할 권한 없음.
+  - **해결**: `os.remove` 대신 `subprocess`를 통해 `sudo rm -f`를 호출하도록 `compute_service.py` 수정.
+
+- **문제**: `destroy_vm` 메서드에서 경로 조작(Path Traversal) 보안 취약점 발견.
+  - **원인**: 사용자 입력(`vm_name`)을 검증 없이 파일 경로 생성에 사용.
+  - **해결**: `os.path.basename()`을 사용해 파일명만 추출하도록 로직 보강.
+
+- **문제**: `make db-clean` 실행 시 `NameError: __file__ is not defined` 오류 발생.
+  - **원인**: `python -c` 명령 환경에서는 `__file__` 변수 사용 불가.
+  - **해결**: `Makefile`에서 복잡한 경로 계산 로직을 제거하고, 단순 상대 경로(`iaas_metadata.db`)를 사용하도록 수정.
+
+---
+
 ## 완료된 작업 및 로그
 
 ### 2025-10-01
@@ -55,15 +78,6 @@
     현재 GET /v1/vms는 VM의 DB 기록 상태만 보여줘. 만약 VM이 외부에서 강제 종료되면 DB와 실제 상태가 달라져.
     -   **작업**: ComputeService.list_vms() 메서드를 수정해야 해. DB에서 VM 목록(이름, UUID)을 읽은 후, 각 VM마다 libvirt-python의 domain.info()를 호출해서 실제 상태(VIR_DOMAIN_RUNNING 등)를 가져와 DB 정보와 병합해서 반환해야지. (이게 AWS나 OpenStack의 VM 목록 조회 방식이야.)
 
-### 아키텍처 비판: AWS와 오픈스택 관점
+---
 
-네 VM 생성 로직은 이제 Nova-API/EC2 API의 최소 요건을 갖췄어. 하지만 다음 단계에서 아키텍처적 허점이 드러날 수 있다.
 
--   **🚨 리스크 1: 디스크 롤백 부재**
-    -   **현황**: ComputeService.create_vm에서 VM 생성 중 Libvirt 오류가 나거나 DB 저장 실패가 발생했을 때, 생성된 디스크 복제본이나 DB 레코드를 자동으로 삭제(롤백)하는 로직이 없어.
-    -   **AWS/OpenStack**: 모든 클라우드 작업은 트랜잭션처럼 처리돼. 중간에 실패하면 원 상태로 되돌리는 롤백 메커니즘이 필수야.
-    -   **난관**: 네 destroy_vm 로직을 create_vm의 except 블록 안에서 재사용하는 방식으로 롤백 기능을 구현해야 해. 난이도가 좀 있지만, MSA 전환 시 안정성을 높이는 기반이 돼.
--   **🚨 리스크 2: 비동기 처리의 필요성 (Phase 2 준비)**
-    -   **현황**: POST /v1/vms 요청은 VM이 완전히 running 상태가 될 때까지 HTTP 연결을 잡고 기다려.
-    -   **AWS/OpenStack**: VM 생성은 시간이 오래 걸리는 작업이므로, API 서버는 요청을 받자마자 202 Accepted를 반환하고, 실제 VM 생성은 **메시지 큐(RabbitMQ)**로 넘겨서 Nova Compute 워커가 비동기적으로 처리해.
-    -   **난관**: 네 로드맵의 Phase 2가 바로 이 RabbitMQ/Celery 도입이야. 지금은 모놀리식이지만, 다음 VM 제어 기능을 만들 때부터 비동기 처리를 염두에 두고 코드를 짜는 습관을 들여야 해.

@@ -17,3 +17,8 @@ Content-Type: application/json
     "ram": 1024,
     "image_name": "Ubuntu-Base-22.04" 
 }
+
+### VM 삭제 (DELETE)
+# 주의: 이 요청이 성공하려면 위에 정의된 'test-vm-to-delete' VM이 존재해야 합니다.
+DELETE {{REQUEST_HEADER}}/v1/vms/final-test-vm-02 HTTP/1.1
+Content-Type: application/json
