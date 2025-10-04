@@ -5,3 +5,10 @@ images/
 iaas_metadata.db
 *.sqlite
 *.sqlite3
+
+# Python General
+__pycache__/
+*.pyc
+
+# Pytest
+.pytest_cache/
