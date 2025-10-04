@@ -91,3 +91,5 @@
     - `[📍 Host에서]` : 나의 PC (윈도우) 
     - `[📍 Dev-VM에서]` : vagrant로 만든 가상 머신 (iaas-dev-node) 
     - `[📍 Nested-VM에서]` : vagrant로 만든 가상 머신에서 생성한 가상머신
+- **커밋 제안**: 의미 있는 작업 단위가 완료되면, 먼저 커밋을 제안할 것.
+- **커밋 후 문서화**: `git commit` 완료 후, 관련 변경 사항을 `memory-bank/`, `docs/`, `.gemini/GEMINI.md` 파일에 요약하여 반영한다.

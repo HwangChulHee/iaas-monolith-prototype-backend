@@ -45,16 +45,55 @@ vm-cleanup:
 	@echo "Cleanup complete."
 
 # ------------------------------------------------------------------------------
+# 🧪 테스트 관련 타겟
+# ------------------------------------------------------------------------------
+
+# 특정 테스트 파일 실행: make test file=services/test_compute_service.py
+file ?=
+test:
+	@if [ -z "$(file)" ]; then \
+		echo "❌ Error: Please specify a test file."; \
+		echo "   Usage: make test file=<path_under_tests_dir>"; \
+		exit 1; \
+	fi
+	@echo "🧪 Running unit test for: tests/$(file)..."
+	PYTHONPATH=src $(PYTHON_CMD) -m pytest tests/$(file)
+
+# 특정 테스트 파일 실행 (상세 모드): make testv file=services/test_compute_service.py
+testv:
+	@if [ -z "$(file)" ]; then \
+		echo "❌ Error: Please specify a test file."; \
+		echo "   Usage: make testv file=<path_under_tests_dir>"; \
+		exit 1; \
+	fi
+	@echo "🧪 Running unit test in verbose mode for: tests/$(file)..."
+	PYTHONPATH=src $(PYTHON_CMD) -m pytest -v tests/$(file)
+
+# 모든 단위 테스트 실행: make test-all
+test-all:
+	@echo "🧪 Running all unit tests..."
+	PYTHONPATH=src $(PYTHON_CMD) -m pytest
+
+# 모든 단위 테스트 실행 (상세 모드): make test-all-v
+test-all-v:
+	@echo "🧪 Running all unit tests in verbose mode..."
+	PYTHONPATH=src $(PYTHON_CMD) -m pytest -v
+
+# ------------------------------------------------------------------------------
 # 💡 디폴트 명령어 (make help)
 # ------------------------------------------------------------------------------
-.PHONY: serve db-init db-clean vm-cleanup help
+.PHONY: serve db-init db-clean vm-cleanup test testv test-all test-all-v help
 
 help:
-	@echo "=========================================================="
-	@echo "IaaS Monolith Prototype Command List (Phase 1 MVP)"
-	@echo "=========================================================="
-	@echo "make serve          : Run the WSGI API server (python3 src/app.py)."
-	@echo "make db-init        : Initialize DB (Create vms, images tables & insert base image)."
-	@echo "make db-clean       : Delete all records from the 'vms' table only."
-	@echo "make vm-cleanup     : Force destroy all VMs, undefine them from libvirt, and delete disk replicas."
-	@echo "=========================================================="
+	@echo "=================================================================================="
+	@echo " IaaS Monolith Prototype Command List (Phase 1 MVP)"
+	@echo "=================================================================================="
+	@echo " make serve                      : Run the WSGI API server (python3 src/app.py)."
+	@echo " make db-init                  : Initialize DB (Create tables & insert base image)."
+	@echo " make db-clean                 : Delete all records from the 'vms' table only."
+	@echo " make vm-cleanup               : Force destroy all VMs, undefine them, and delete disks."
+	@echo " make test file=<path>         : Run tests for a specific file under the 'tests' dir."
+	@echo " make testv file=<path>        : Run specific tests in verbose mode."
+	@echo " make test-all                 : Run all unit tests."
+	@echo " make test-all-v               : Run all unit tests in verbose mode."
+	@echo "=================================================================================="
