@@ -1,5 +1,33 @@
 # 개발 로그
 
+## 2025-10-04
+
+#### ✅ 완료된 작업
+- **단위 테스트 기반 구축**: `pytest`와 `unittest.mock`을 도입하여 `ComputeService`에 대한 단위 테스트를 확장.
+  - `list_vms` 메서드 검증 완료.
+  - `create_vm` 메서드의 성공 케이스 및 주요 실패 케이스(이름 중복, 이미지 없음) 3건을 추가하여 안정성 강화.
+- **Makefile 테스트 워크플로우 개선**: 개발 편의성을 위해 테스트 실행 명령어를 `Makefile`에 통합하고, 두 번의 개선을 통해 사용성을 높임.
+  - `make test-all`: 프로젝트의 모든 테스트를 실행.
+  - `make test file=<path>`: `tests/` 디렉토리 하위의 특정 파일만 지정하여 빠르게 테스트 가능.
+- **협업 규칙 정립 및 문서화**: 개발자의 이해 증진 및 코드 품질 향상을 위해 아래 규칙들을 `GEMINI.md`에 명시하고 구체화함.
+  - `Teach-back`, `왜? 질문 생활화`, `상호 코드 리뷰`
+  - `단계별 설명`, `Sandbox 활용` 등 Gemini의 설명 방식 규칙.
+  - `mcp` 툴과 일반 파일 수정의 역할을 구분하는 파일 관리 규칙.
+
+
+#### 🐛 트러블슈팅 기록
+- **문제**: `pytest` 실행 시 `ModuleNotFoundError: No module named 'database'` 발생.
+  - **원인**: 테스트 실행 환경에서 `src` 디렉토리를 소스 코드로 인식하지 못함.
+  - **해결**: `PYTHONPATH=src` 환경 변수를 설정하여 파이썬이 모듈을 찾을 수 있도록 경로를 지정.
+- **문제**: 단위 테스트 실행 시 `AssertionError: assert 'UNKNOWN' == 'RUNNING'` 발생.
+  - **원인**: `libvirt` 모듈 전체를 모킹하면서, 테스트 코드의 실제 `libvirt` 상수와 `ComputeService`의 모킹된 `libvirt` 상수가 달라져 상태 매핑이 실패함.
+  - **해결**: `patch('src.services.compute_service.libvirt')` 대신 `patch('src.services.compute_service.libvirt.open')`으로 변경하여, 연결만 모킹하고 상수 등은 실제 값을 사용하도록 수정.
+- **문제**: `git commit` 명령어 실행 시 `syntax error near unexpected token` 발생.
+  - **원인**: 커밋 메시지 내에 포함된 백틱(`) 문자가 셸에 의해 특수 문자로 해석됨.
+  - **해결**: 백틱을 작은따옴표(')로 변경하여 셸 파싱 오류를 회피.
+
+---
+
 ## 2025-10-03
 
 #### ✅ 완료된 작업

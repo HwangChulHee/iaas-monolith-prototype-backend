@@ -1,11 +1,14 @@
-### 🚀 다음 작업 제안: VM 생명주기 관리 완성
+### 🚀 다음 작업 제안: 테스트 커버리지 확장
 
-지금까지 VM의 생성(Create), 조회(Read), 삭제(Delete) 기능을 구현했습니다. 이제 VM의 핵심 생명주기를 완성하기 위해 **시작(Start), 중지(Shutdown), 재시작(Reboot)** 기능을 추가할 차례입니다.
+`ComputeService`의 `list_vms`에 대한 단위 테스트를 성공적으로 추가했고, `Makefile`을 통해 편리한 테스트 워크플로우도 마련했습니다.
 
-다음과 같은 API들을 구현하는 것을 제안합니다.
+새로운 기능(VM 시작, 중지 등)을 추가하기 전에, 이미 구현된 핵심 기능들의 안정성을 보장하는 것이 중요합니다. 현재 `create_vm`과 `destroy_vm` 메서드는 복잡한 로직을 포함하고 있음에도 불구하고 단위 테스트가 부재한 상태입니다.
 
--   `POST /v1/vms/{vm_name}/start`
--   `POST /v1/vms/{vm_name}/shutdown`
--   `POST /v1/vms/{vm_name}/reboot`
+따라서 다음 작업으로, `ComputeService`의 테스트 커버리지를 확장하는 것을 제안합니다.
 
-이를 위해 `ComputeService`에 `start_vm`, `shutdown_vm`, `reboot_vm` 메서드를 추가하고, 각각 libvirt의 `domain.create()`, `domain.shutdown()`, `domain.reboot()` 함수를 호출하도록 구현할 수 있습니다.
+1.  **`create_vm` 메서드 단위 테스트 작성**
+    -   성공 케이스 (Happy Path) 테스트
+    -   실패 케이스 (e.g., 디스크 생성 실패, DB 저장 실패)에 대한 예외 처리 검증
+2.  **`destroy_vm` 메서드 단위 테스트 작성**
+    -   VM이 성공적으로 삭제되고 관련 리소스(디스크, DB 레코드)가 정리되는지 검증
+    -   삭제할 VM을 찾지 못했을 때 `VmNotFoundError`가 발생하는지 검증

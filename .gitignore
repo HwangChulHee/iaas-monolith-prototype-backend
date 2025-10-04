@@ -12,3 +12,6 @@ __pycache__/
 
 # Pytest
 .pytest_cache/
+
+# Directory for temporary scripts and examples
+sandbox/
