@@ -1,6 +1,7 @@
-# Gemini 프로젝트 맥락 요약
+# Gemini 프로젝트 컨텍스트
 
-> 이 문서는 Gemini가 프로젝트의 전체 맥락을 빠르고 정확하게 파악할 수 있도록 핵심 정보를 요약한 것입니다.
+> 이 문서는 Gemini가 프로젝트의 전체 맥락을 빠르게 파악하기 위한 **인덱스**입니다.
+> 상세 내용은 각 문서 링크를 참고해주세요.
 
 ---
 
@@ -15,78 +16,52 @@
 
 ## 2. 💻 기술 스택 및 아키텍처
 
-- **언어**: Python 3
-- **백엔드**: 순수 WSGI (`wsgiref.simple_server` 기반)
-- **가상화**: KVM/QEMU 및 `libvirt-python`
-- **DB**: SQLite3 (메타데이터 저장용)
-- **개발 환경**: Vagrant와 VirtualBox (중첩 가상화)
-- **향후 도입**: ASGI, RabbitMQ/Celery (MSA 전환용), Next.js (프론트엔드)
+- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](./docs/developer/architecture.md)
 
 ---
 
 ## 3. 📂 디렉토리 구조
 
-- `configs/`: VM 정의 XML 템플릿 (`vm_template.xml`)
+- `configs/`: VM 정의 XML 템플릿
 - `docs/`: 모든 프로젝트 문서
-- `src/`: 모든 파이썬 소스 코드 (`services/`, `database/`, `utils/`)
-- `scripts/`: Vagrant 프로비저닝 등 스크립트 파일
-- `Makefile`: 실행 명령어 단축 및 환경 관리 스크립트
-- `sandbox/`: 코드 예제 실행, 자유로운 실험을 위한 공간 (git 추적 제외)
+- `src/`: 모든 파이썬 소스 코드
+- `tests/`: 모든 테스트 코드
+- `scripts/`: 스크립트 파일
+- `Makefile`: 실행 명령어 단축 및 환경 관리
+- `memory-bank/`: `mcp` 툴로 관리되는 프로젝트의 동적 메모리
+- `sandbox/`: 코드 예제 실행 및 실험을 위한 공간 (git 추적 제외)
 
 ---
 
 ## 4. 🗺️ 전체 로드맵
 
-- **Phase 1 (25.10 ~ 25.11)**: 코어 기능 프로토타이핑 및 MVP 개발
-- **Phase 2 (25.12 ~ 26.01)**: MSA 전환 및 네트워크 서비스 구현
-- **Phase 3 (26.02)**: 핵심 자원 관리 기능 확장 (스토리지)
-- **Phase 4 (26.03)**: 정책 관리 및 시스템 최적화
-- **Phase 5 (26.04)**: 최종 통합 및 시연 준비
+- [전체 로드맵 보기 (docs/project/roadmap.md)](./docs/project/roadmap.md)
 
 ---
 
 ## 5. 🚀 현재 진행 상황 및 다음 단계
 
-- **현재 상태**: **Phase 1 (MVP 구현 완료)**. VM CRUD API의 기반이 완성되었고, **단위 테스트 및 개발 워크플로우가 정립**되었습니다. 코드 안정성을 높이며 기능 확장을 준비하는 단계입니다.
-
-- **최근 완료 작업 (2025-10-04)**:
-    - **단위 테스트 기반 구축**: `pytest`와 `unittest.mock`을 사용해 `ComputeService`의 단위 테스트를 추가.
-        - `list_vms` 메서드 검증 완료.
-        - `create_vm` 메서드의 성공 케이스(Happy Path) 및 주요 실패 케이스(이름 중복, 이미지 없음) 검증 완료.
-    - **Makefile 테스트 워크플로우 개선**: `make test-all`, `make test file=<path>` 등 표준화된 테스트 명령어를 도입하여 개발 편의성을 향상시켰습니다.
-    - **Gemini 행동 규칙 추가**: 커밋 후 관련 문서를 자동으로 업데이트하는 규칙을 `GEMINI.md`에 명시했습니다.
-
-- **다음 행동**: 
-    - **테스트 커버리지 확장**: `ComputeService`의 `create_vm`에 대한 나머지 실패 시나리오(디스크 복제, libvirt 정의/시작, 최종 DB 저장 실패)에 대한 단위 테스트를 추가하여 코드 안정성을 더욱 강화합니다.
+- [최신 개발 로그 (docs/project/development-log.md)](./docs/project/development-log.md)
+- [다음 작업 계획 (docs/project/next-tasks.md)](./docs/project/next-tasks.md)
 
 ---
 
 ## 6. 🧐 아키텍처 검토 및 비판
 
-현재 프로젝트의 아키텍처를 검토했을 때, 향후 확장성을 위해 고려해야 할 세 가지 주요 사항이 있습니다.
-
-1.  **견고성 부족: 롤백(Rollback) 로직 부재**
-    -   **현황**: VM 생성 또는 삭제 과정 중 중간에 실패하면, 일부 리소스(디스크 파일, libvirt 정의 등)가 그대로 남아 시스템에 쓰레기 데이터가 쌓입니다.
-    -   **위험성**: 이런 '고아 리소스'들은 향후 다른 작업에 예기치 않은 충돌을 일으킬 수 있습니다.
-    -   **개선 방향**: 모든 작업 단계를 트랜잭션(Transaction)처럼 관리하여, 실패 시 이전 상태로 되돌리는 롤백 로직을 추가해야 합니다.
-
-2.  **성능 한계: 동기(Synchronous) 처리 방식**
-    -   **현황**: VM 생성처럼 시간이 오래 걸리는 작업을 요청하면, 완료될 때까지 API가 응답을 주지 않고 계속 기다립니다.
-    -   **위험성**: 사용자가 많아지면 서버의 가용 스레드가 모두 고갈되어 새로운 요청을 처리하지 못하는 상태가 될 수 있습니다.
-    -   **개선 방향**: 로드맵에 있듯이, RabbitMQ 같은 메시지 큐를 도입하여 오래 걸리는 작업은 백그라운드에서 비동기적으로 처리하도록 구조를 변경해야 합니다.
-
-3.  **비효율적인 목록 조회: N+1 문제**
-    -   **현황**: `list_vms`는 DB에서 N개의 VM을 조회한 뒤, 각 VM의 상태를 확인하기 위해 N번의 libvirt API를 추가로 호출합니다.
-    -   **위험성**: VM의 개수가 많아지면 `GET /v1/vms` API의 응답 속도가 급격히 느려집니다.
-    -   **개선 방향**: `self.conn.listAllDomains()` 같은 함수로 libvirt의 모든 VM 상태를 **한 번에** 가져온 후, DB에서 가져온 정보와 메모리상에서 합치는 방식으로 리팩토링하여 API 호출 횟수를 줄여야 합니다.
+- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](./docs/developer/architecture.md)
 
 ---
 
 ## 7. 🤖 Gemini 대화 규칙
 
 - **역할**: 시니어 기술 아키텍트, 프로젝트 매니저, 멘토.
-- **피드백**: AWS/오픈스택을 기준으로 아키텍처의 난점과 리스크를 비판적으로 제시.
+- **피드백**: AWS/오픈스택을 기준으로 아키텍처의 난점과 리스크를 비판적으로 제시. (`6. 아키텍처 검토` 항목 참고)
 - **스타일**: 친구 같은 반말, 직설적이고 냉정한 피드백 선호.
+
+- **정보 출처 및 학습**
+    - **최신 개발 로그**: [docs/project/development-log.md](./docs/project/development-log.md)
+    - **다음 작업 계획**: [docs/project/next-tasks.md](./docs/project/next-tasks.md)
+    - **사용자 이해도 로그**: [docs/project/user_understanding_log.md](./docs/project/user_understanding_log.md)
 
 - **설명 방식**
     - **용어 설명**: 새로운 기술/용어는 비유나 예시로 설명.
@@ -110,4 +85,3 @@
     - `[📍 Host에서]` : 나의 PC (윈도우) 
     - `[📍 Dev-VM에서]` : vagrant로 만든 가상 머신 (iaas-dev-node) 
     - `[📍 Nested-VM에서]` : vagrant로 만든 가상 머신에서 생성한 가상머신
-
