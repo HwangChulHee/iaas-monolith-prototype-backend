@@ -1,5 +1,42 @@
 # 개발 로그
 
+## 2025-10-05 (저녁)
+
+#### ✅ 완료된 작업
+- **`create_vm` 메서드 리팩토링**: `ComputeService.create_vm`의 에러 처리 로직을 단일 `try-except` 블록으로 중앙화하고, 단계별 롤백 로직을 도입하여 안정성을 대폭 향상시킴.
+  - **개선**: `VmAlreadyExistsError`, `ImageNotFoundError`, `VmCreationError` 등 명시적인 커스텀 예외를 정의하여 에러 발생 원인을 명확히 함.
+  - **롤백 범위**: VM 생성 과정 중 어느 단계에서 실패하더라도 이전에 생성된 리소스(libvirt 도메인, 디스크 이미지)가 모두 정리되도록 보장.
+- **단위 테스트 커버리지 확장**: 리팩토링된 `create_vm`의 안정성을 검증하기 위해 다양한 실패 시나리오에 대한 단위 테스트를 추가.
+  - 디스크 생성 실패, libvirt VM 정의 실패, VM 시작 실패, 최종 DB 저장 실패 시 각각의 롤백 로직이 정확히 호출되는지 검증 완료.
+- **테스트 코드 구조 개선**: `test_compute_service.py`의 테스트 클래스를 `TestCreateVm`과 `TestListVms`로 분리하여 가독성과 유지보수성을 높임.
+
+#### 🐛 트러블슈팅 기록
+- **문제**: 테스트 실행 시 `AttributeError` 및 `NameError` 발생.
+  - **원인 1 (`AttributeError`)**: 실제 메서드에 `side_effect`나 `assert_called_once` 같은 모의 객체 전용 속성을 사용하려고 시도함.
+  - **해결 1**: `@patch.object` 데코레이터를 사용하여 테스트 대상 메서드(`_save_vm_metadata_to_db`, `_rollback_vm_creation`)를 모의 객체로 올바르게 전환함.
+  - **원인 2 (`NameError`)**: 테스트 코드에서 새로 정의한 커스텀 예외 클래스를 임포트하지 않음.
+  - **해결 2**: `from src.services.compute_service import ...` 구문에 필요한 모든 예외 클래스를 추가함.
+- **문제**: DB 저장 실패 테스트 중, 의도치 않은 `AttributeError: 'FakeDomain' object has no attribute 'create'` 발생.
+  - **원인**: 테스트에 사용된 모의 객체 `FakeDomain`에 `create` 메서드가 없어 VM 시작 단계에서 실패함.
+  - **해결**: `FakeDomain` 클래스에 `create(self): return 0` 메서드를 추가하여 실제 `libvirt` 도메인 객체처럼 동작하도록 수정.
+
+---
+
+## 2025-10-05
+
+#### ✅ 완료된 작업
+- **VM 생성 견고성 강화 (Rollback 구현)**: `ComputeService.create_vm` 메서드에 롤백 로직을 구현하여 트랜잭션의 안정성을 확보함.
+  - **작동 방식**: DB 저장(Commit) 실패 시, 성공적으로 정의/시작된 Libvirt Domain을 `destroy()` 및 `undefine()`하고, `ImageService.delete_vm_disk`를 호출하여 복제된 디스크 파일(.qcow2)까지 삭제하도록 처리함.
+- **단위 테스트 확장**: `test_create_vm_fails_if_db_insert_fails` 테스트를 추가하여 롤백 로직의 호출(Domain.destroy, Domain.undefine, ImageService.delete_vm_disk)을 검증 완료.
+
+#### 🐛 트러블슈팅 기록
+- **문제**: 롤백 로직 테스트가 코드 부재로 인해 거짓 성공(False Positive)을 발생시킴.
+  - **해결**: 테스트 코드에 롤백 호출 검증 코드를 추가하여 실패를 강제했고, 이를 통해 롤백 로직 구현을 완료함.
+- **개선**: `src/services/image_service.py`에 `delete_vm_disk` 메서드를 추가하여 디스크 파일 삭제 기능을 모듈화함.
+
+---
+
+
 ## 2025-10-04
 
 #### ✅ 완료된 작업
