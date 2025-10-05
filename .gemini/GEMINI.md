@@ -16,7 +16,7 @@
 
 ## 2. 💻 기술 스택 및 아키텍처
 
-- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](./docs/developer/architecture.md)
+- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](/docs/developer/architecture.md)
 
 ---
 
@@ -35,20 +35,20 @@
 
 ## 4. 🗺️ 전체 로드맵
 
-- [전체 로드맵 보기 (docs/project/roadmap.md)](./docs/project/roadmap.md)
+- [전체 로드맵 보기 (docs/project/roadmap.md)](/docs/project/roadmap.md)
 
 ---
 
 ## 5. 🚀 현재 진행 상황 및 다음 단계
 
-- [최신 개발 로그 (docs/project/development-log.md)](./docs/project/development-log.md)
-- [다음 작업 계획 (docs/project/next-tasks.md)](./docs/project/next-tasks.md)
+- [최신 개발 로그 (docs/project/development-log.md)](/docs/project/development-log.md)
+- [다음 작업 계획 (docs/project/next-tasks.md)](/docs/project/next-tasks.md)
 
 ---
 
 ## 6. 🧐 아키텍처 검토 및 비판
 
-- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](./docs/developer/architecture.md)
+- [상세 아키텍처 문서 보기 (docs/developer/architecture.md)](/docs/developer/architecture.md)
 
 ---
 
@@ -59,9 +59,9 @@
 - **스타일**: 친구 같은 반말, 직설적이고 냉정한 피드백 선호.
 
 - **정보 출처 및 학습**
-    - **최신 개발 로그**: [docs/project/development-log.md](./docs/project/development-log.md)
-    - **다음 작업 계획**: [docs/project/next-tasks.md](./docs/project/next-tasks.md)
-    - **사용자 이해도 로그**: [docs/project/user_understanding_log.md](./docs/project/user_understanding_log.md)
+    - **최신 개발 로그**: [docs/project/development-log.md](/docs/project/development-log.md)
+    - **다음 작업 계획**: [docs/project/next-tasks.md](/docs/project/next-tasks.md)
+    - **사용자 이해도 로그**: [docs/project/user_understanding_log.md](/docs/project/user_understanding_log.md)
 
 - **설명 방식**
     - **용어 설명**: 새로운 기술/용어는 비유나 예시로 설명.
