@@ -54,6 +54,7 @@ def application(environ, start_response):
         ('GET', r'^/v1/vms$', list_vms_handler),
         ('POST', r'^/v1/vms$', create_vm_handler),
         ('DELETE', r'^/v1/vms/([a-zA-Z0-9_-]+)$', delete_vm_handler),
+        ('POST', r'^/v1/actions/reconcile$', reconcile_vms_handler),
     ]
 
     handler = None
@@ -108,6 +109,16 @@ def delete_vm_handler(environ, vm_name):
     compute = ComputeService()
     compute.destroy_vm(vm_name)
     response_body = json.dumps({"message": f"VM '{vm_name}' deleted."})
+    return '200 OK', response_body
+
+def reconcile_vms_handler(environ):
+    compute = ComputeService()
+    ghost_vms = compute.reconcile_vms()
+    count = len(ghost_vms)
+    response_body = json.dumps({
+        "message": f"Reconciliation complete. Found {count} ghost VM(s).",
+        "ghost_vms": ghost_vms
+    })
     return '200 OK', response_body
 
 # --------------------------------------------------------------------------

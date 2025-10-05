@@ -207,6 +207,47 @@ class ComputeService:
 
         return True
 
+    def reconcile_vms(self):
+        """
+        Libvirt와 DB의 VM 목록을 비교하여 불일치하는 '유령 VM'을 찾아냅니다.
+        (DB에는 없지만 Libvirt에는 존재하는 VM)
+        """
+        # 1. Libvirt에서 모든 VM의 UUID 조회
+        try:
+            all_domains = self.conn.listAllDomains(0)
+            libvirt_uuids = {domain.UUIDString() for domain in all_domains}
+        except libvirt.libvirtError as e:
+            print(f"Error fetching domains from libvirt: {e}")
+            return []
+
+        # 2. DB에서 모든 VM의 UUID 조회
+        db_uuids = set()
+        with DBConnector() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT uuid FROM vms")
+            rows = cursor.fetchall()
+            db_uuids = {row['uuid'] for row in rows}
+
+        # 3. 두 목록을 비교하여 '유령 VM'의 UUID를 식별
+        ghost_vm_uuids = libvirt_uuids - db_uuids
+
+        # 4. '유령 VM'의 상세 정보 (이름, UUID)를 조회하여 반환
+        ghost_vms = []
+        if ghost_vm_uuids:
+            for uuid in ghost_vm_uuids:
+                try:
+                    domain = self.conn.lookupByUUIDString(uuid)
+                    ghost_vms.append({
+                        "name": domain.name(),
+                        "uuid": uuid,
+                        "state": self._map_vm_state(domain.info()[0])
+                    })
+                except libvirt.libvirtError:
+                    # UUID로 조회가 실패하는 경우는 거의 없지만, 방어 코드 추가
+                    continue
+        
+        return ghost_vms
+
     def __del__(self):
         if self.conn:
             self.conn.close()

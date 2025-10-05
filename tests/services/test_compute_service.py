@@ -457,3 +457,51 @@ class TestDestroyVm:
         mock_subprocess_run.assert_called_once_with(['sudo', 'rm', '-f', disk_path], check=True)
         mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ?", (vm_name,))
         mock_db_connector.commit.assert_called_once()
+
+# ===================================================================
+#  reconcile_vms 테스트
+# ===================================================================
+class TestReconcileVms:
+    def test_reconcile_vms_no_ghosts(self, compute_service, mock_db_connector, mock_libvirt):
+        """불일치하는 VM이 없을 때 빈 리스트를 반환하는지 테스트합니다."""
+        # Arrange
+        # DB와 Libvirt 양쪽에 모두 존재하는 VM
+        managed_domain = FakeDomain("managed-vm", "managed-uuid")
+        
+        mock_libvirt.listAllDomains.return_value = [managed_domain]
+        
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchall.return_value = [{"uuid": "managed-uuid"}]
+
+        # Act
+        ghost_vms = compute_service.reconcile_vms()
+
+        # Assert
+        assert ghost_vms == []
+
+    def test_reconcile_vms_finds_ghosts(self, compute_service, mock_db_connector, mock_libvirt):
+        """DB에 없는 '유령 VM'을 정확히 찾아내는지 테스트합니다."""
+        # Arrange
+        # DB와 Libvirt 양쪽에 모두 존재하는 VM
+        managed_domain = FakeDomain("managed-vm", "managed-uuid")
+        # Libvirt에만 존재하는 '유령' VM
+        ghost_domain = FakeDomain("ghost-vm", "ghost-uuid", state_code=libvirt.VIR_DOMAIN_SHUTOFF)
+
+        mock_libvirt.listAllDomains.return_value = [managed_domain, ghost_domain]
+        # lookupByUUIDString은 ghost_domain을 반환하도록 설정
+        mock_libvirt.lookupByUUIDString.return_value = ghost_domain
+        
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchall.return_value = [{"uuid": "managed-uuid"}]
+
+        # Act
+        ghost_vms = compute_service.reconcile_vms()
+
+        # Assert
+        assert len(ghost_vms) == 1
+        assert ghost_vms[0]["name"] == "ghost-vm"
+        assert ghost_vms[0]["uuid"] == "ghost-uuid"
+        assert ghost_vms[0]["state"] == "SHUTOFF"
+        
+        # 유령 VM의 UUID로만 lookup이 호출되었는지 확인
+        mock_libvirt.lookupByUUIDString.assert_called_once_with("ghost-uuid")
