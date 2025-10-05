@@ -67,6 +67,18 @@ class ComputeService:
                 )
                 conn.commit()
         except Exception as db_e:
+            print(f"DB save failed. Initiating rollback for VM '{vm_name}'.")
+            try:
+                domain.destroy() # 강제 종료
+                domain.undefine() # 정의 제거
+                
+            except Exception as e:
+                print(f"Rollback Warning : Libert clean up failed : {e}")
+            
+            #디스크 파일 삭제
+            ImageService.delete_vm_disk(vm_disk_filepath)
+            
+            # 최종적으로 DB 저장 실패 예외를 다시 발생
             raise Exception(f"VM created, but DB save failed: {db_e}")
 
         return vm_name, vm_uuid

@@ -44,3 +44,24 @@ class ImageService:
             
         # 새로 생성된 디스크 파일 경로 반환
         return target_filepath
+  
+    @staticmethod
+    def delete_vm_disk(disk_filepath):
+        """
+        VM 생성 시 복제된 디스크 파일을 삭제합니다. (롤백용)
+        """
+        # 디스크 파일 경로 조작 방지 (basename을 쓰지 않도록 주의. 전체 경로를 받아야 함.)
+        
+        if not os.path.exists(disk_filepath):
+            # 파일이 없으면 그냥 통과
+            print(f"Disk file not found, skipping delete: {disk_filepath}")
+            return True
+
+        try:
+            # ⚠️ WARNING: /var/lib/libvirt/images 경로이므로 sudo 권한이 필요합니다.
+            subprocess.run(['sudo', 'rm', '-f', disk_filepath], check=True)
+            print(f"Disk file successfully deleted: {disk_filepath}")
+            return True
+        except subprocess.CalledProcessError as e:
+            # 삭제 실패 시 예외 발생
+            raise Exception(f"Failed to delete disk file '{disk_filepath}': {e.stderr}")

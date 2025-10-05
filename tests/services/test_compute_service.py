@@ -6,6 +6,7 @@ import sqlite3
 from unittest.mock import patch, MagicMock, call
 from datetime import datetime
 
+from services.image_service import ImageService
 from src.services.compute_service import ComputeService, VmNotFoundError
 
 # 테스트용 가짜 libvirt 도메인 객체
@@ -185,3 +186,51 @@ class TestComputeService:
 
         # 이미지 조회 실패 후, 다른 작업(디스크 생성 등)이 호출되지 않았는지 확인
         mock_image_service.create_vm_disk.assert_not_called()
+
+    @patch('src.services.compute_service.datetime')
+    @patch('src.services.compute_service.ImageService')
+    @patch('src.services.compute_service.generate_vm_xml')
+    @patch('src.services.compute_service.uuid')
+    def test_create_vm_fails_if_db_insert_fails(self, mock_uuid, mock_generate_xml, mock_image_service, mock_datetime, 
+                                               compute_service, mock_db_connector, mock_libvirt):
+        """DB에 VM 메타데이터를 저장하는 마지막 단계에서 실패 시 예외가 발생하는지 테스트합니다. (롤백 로직이 없어 실패 예상)"""
+        # Arrange
+        vm_name, cpu_count, ram_mb, image_name = "db-fail-vm", 2, 2048, "Ubuntu-Base-22.04"
+        base_image_path = "/var/lib/libvirt/images/ubuntu-base.qcow2"
+        new_disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
+        test_uuid = "db-failure-uuid"
+        dummy_xml = "<domain>...</domain>"
+
+        # 1. DB: 이름 중복 검사 통과, 이미지 경로 조회 성공
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchone.side_effect = [None, {"filepath": base_image_path}]
+        
+        # 2. Disk, Libvirt: VM 정의 및 시작 성공
+        mock_image_service.create_vm_disk.return_value = new_disk_path
+        mock_uuid.uuid4.return_value = test_uuid
+        mock_generate_xml.return_value = dummy_xml
+        mock_domain = MagicMock()
+        mock_libvirt.defineXML.return_value = mock_domain
+        mock_domain.create.return_value = 0
+
+        # 3. 💥 DB 저장 실패 시나리오 설정
+        # commit() 시점에서 DB 오류를 발생시켜, 롤백이 필요한 상태를 시뮬레이션한다.
+        db_error_exception = Exception("Simulated DB Insert Error")
+        mock_db_connector.commit.side_effect = db_error_exception
+
+        # Act & Assert
+        with pytest.raises(Exception) as excinfo:
+            compute_service.create_vm(vm_name, cpu_count, ram_mb, image_name)
+
+        # 4. 검증 (Assert)
+        # 예외 메시지가 DB 실패 때문인지 확인
+        assert "DB save failed" in str(excinfo.value)
+        
+        # 🚨 실패가 예상되는 부분: 롤백이 호출되었는지 확인 🚨
+        # 롤백 로직이 없으므로, 이 시점에서 mock_domain.destroy() 등이 호출되지 않는다.
+        # 즉, VM은 이미 실행되었지만 DB 기록만 없는 '고아 리소스'가 발생한다.
+        mock_domain.destroy.assert_called_once()  # 현재 실패함!
+        mock_domain.undefine.assert_called_once() # 현재 실패함!
+        
+        # 🚨 롤백이 호출되었는지 확인 🚨
+        mock_image_service.delete_vm_disk.assert_called_once_with(new_disk_path) # 디스크 삭제 호출 검증
