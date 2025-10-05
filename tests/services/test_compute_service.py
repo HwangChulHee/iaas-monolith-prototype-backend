@@ -373,3 +373,87 @@ class TestListVms:
         mock_libvirt.lookupByUUIDString.assert_has_calls(
             [call("uuid-1"), call("uuid-2")]
         )
+
+# ===================================================================
+#  destroy_vm 테스트
+# ===================================================================
+class TestDestroyVm:
+    @patch('src.services.compute_service.subprocess.run')
+    def test_destroy_vm_success(self, mock_subprocess_run, compute_service, mock_db_connector, mock_libvirt):
+        """VM 삭제 성공 시나리오 (Happy Path)를 테스트합니다."""
+        # Arrange
+        vm_name = "test-vm-to-destroy"
+        vm_uuid = "destroy-uuid"
+        disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
+
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchone.return_value = {"uuid": vm_uuid}
+
+        mock_domain = FakeDomain(vm_name, vm_uuid)
+        mock_domain.destroy = MagicMock()
+        mock_domain.undefine = MagicMock()
+        mock_libvirt.lookupByUUIDString.return_value = mock_domain
+
+        # Act
+        result = compute_service.destroy_vm(vm_name)
+
+        # Assert
+        assert result is True
+
+        # 1. DB에서 UUID 조회
+        mock_cursor.execute.assert_any_call("SELECT uuid FROM vms WHERE name = ?", (vm_name,))
+        
+        # 2. Libvirt 작업 확인
+        mock_libvirt.lookupByUUIDString.assert_called_once_with(vm_uuid)
+        mock_domain.destroy.assert_called_once()
+        mock_domain.undefine.assert_called_once()
+
+        # 3. 디스크 삭제 확인
+        mock_subprocess_run.assert_called_once_with(['sudo', 'rm', '-f', disk_path], check=True)
+
+        # 4. DB 레코드 삭제 확인
+        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ?", (vm_name,))
+        mock_db_connector.commit.assert_called_once()
+
+    def test_destroy_vm_not_found(self, compute_service, mock_db_connector, mock_libvirt):
+        """DB에 VM이 없을 때 VmNotFoundError 예외가 발생하는지 테스트합니다."""
+        # Arrange
+        vm_name = "non-existent-vm"
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchone.return_value = None
+
+        # Act & Assert
+        with pytest.raises(VmNotFoundError) as excinfo:
+            compute_service.destroy_vm(vm_name)
+
+        assert vm_name in str(excinfo.value)
+        # Libvirt나 subprocess가 호출되지 않았는지 확인
+        mock_libvirt.lookupByUUIDString.assert_not_called()
+
+    @patch('src.services.compute_service.subprocess.run')
+    def test_destroy_vm_cleans_up_if_domain_not_found_in_libvirt(self, mock_subprocess_run, compute_service, mock_db_connector, mock_libvirt):
+        """Libvirt에 VM이 없어도 나머지 리소스(디스크, DB)가 정리되는지 테스트합니다."""
+        # Arrange
+        vm_name = "ghost-vm"
+        vm_uuid = "ghost-uuid"
+        disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
+
+        mock_cursor = mock_db_connector.cursor()
+        mock_cursor.fetchone.return_value = {"uuid": vm_uuid}
+
+        # Libvirt에서 Domain을 찾지 못하는 상황 시뮬레이션
+        mock_libvirt.lookupByUUIDString.side_effect = libvirt.libvirtError("Domain not found")
+
+        # Act
+        result = compute_service.destroy_vm(vm_name)
+
+        # Assert
+        assert result is True
+
+        # Libvirt 조회는 시도했어야 함
+        mock_libvirt.lookupByUUIDString.assert_called_once_with(vm_uuid)
+
+        # 디스크 삭제와 DB 레코드 삭제는 정상적으로 호출되어야 함
+        mock_subprocess_run.assert_called_once_with(['sudo', 'rm', '-f', disk_path], check=True)
+        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ?", (vm_name,))
+        mock_db_connector.commit.assert_called_once()

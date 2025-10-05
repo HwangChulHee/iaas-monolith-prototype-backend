@@ -162,43 +162,48 @@ class ComputeService:
         return state_map.get(state_code, 'UNKNOWN')
 
     def destroy_vm(self, vm_name):
-        """VM을 강제 종료/삭제하고, 디스크 파일을 삭제한 후 DB 기록을 제거합니다."""
+        """VM의 모든 리소스를 정리하고 DB에서 기록을 삭제합니다. 중간에 오류가 발생해도 끝까지 정리을 시도합니다."""
         safe_vm_name = os.path.basename(vm_name)
         if safe_vm_name != vm_name:
             raise ValueError(f"Invalid characters in VM name: '{vm_name}'")
 
-        vm_uuid = None
+        # 1. DB에서 VM 정보 조회. 없으면 여기서 중단.
         with DBConnector() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT uuid FROM vms WHERE name = ?", (safe_vm_name,))
             db_record = cursor.fetchone()
             if db_record is None:
-                raise VmNotFoundError(f"VM '{safe_vm_name}' not found.")
+                raise VmNotFoundError(f"VM '{safe_vm_name}' not found in database.")
             vm_uuid = db_record["uuid"]
 
         try:
-            domain = self.conn.lookupByUUIDString(vm_uuid)
-            if domain.isActive():
-                domain.destroy()
-            domain.undefine()
-        except libvirt.libvirtError as e:
-            error_msg = str(e)
-            if "Domain not found" in error_msg or "no domain with matching" in error_msg:
-                print(f"Libvirt Info: VM '{safe_vm_name}' not found, proceeding with cleanup.")
-            else:
-                print(f"Libvirt Warning: {e}. Proceeding with cleanup.")
+            # 2. Libvirt 리소스 정리 시도
+            try:
+                domain = self.conn.lookupByUUIDString(vm_uuid)
+                if domain.isActive():
+                    domain.destroy() # 강제 종료
+                domain.undefine()    # 정의 제거
+                print(f"Libvirt Info: Domain for VM '{safe_vm_name}' cleaned up.")
+            except libvirt.libvirtError as e:
+                # 이미 삭제되었거나 다른 libvirt 오류 발생 시, 경고만 남기고 계속 진행
+                print(f"Libvirt Warning: Failed to clean up domain for VM '{safe_vm_name}': {e}. Proceeding cleanup.")
 
-        DISK_IMAGE_PATH_BASE = "/var/lib/libvirt/images"
-        disk_filepath = os.path.join(DISK_IMAGE_PATH_BASE, f"{safe_vm_name}.qcow2")
-        try:
-            subprocess.run(['sudo', 'rm', '-f', disk_filepath], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Subprocess Error: 'sudo rm -f' for disk '{disk_filepath}' failed: {e}. Continuing cleanup.")
-
-        with DBConnector() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM vms WHERE name = ?", (safe_vm_name,))
-            conn.commit()
+            # 3. 디스크 리소스 정리 시도
+            disk_filepath = os.path.join("/var/lib/libvirt/images", f"{safe_vm_name}.qcow2")
+            try:
+                # ImageService를 사용하는 것이 더 일관성 있음 (추후 리팩토링 가능)
+                subprocess.run(['sudo', 'rm', '-f', disk_filepath], check=True)
+                print(f"Disk Info: Disk for VM '{safe_vm_name}' deleted.")
+            except subprocess.CalledProcessError as e:
+                print(f"Disk Cleanup Warning: Failed to delete disk '{disk_filepath}': {e}. Proceeding cleanup.")
+        
+        finally:
+            # 4. 최종적으로 DB에서 VM 기록 삭제 (가장 중요)
+            with DBConnector() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM vms WHERE name = ?", (safe_vm_name,))
+                conn.commit()
+                print(f"DB Info: Record for VM '{safe_vm_name}' deleted.")
 
         return True
 
