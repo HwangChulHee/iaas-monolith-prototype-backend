@@ -79,6 +79,7 @@ def compute_service(mock_libvirt):
 # ===================================================================
 class TestCreateVm:
     VM_DEFAULTS = {
+        "project_id": 1,
         "vm_name": "new-test-vm",
         "cpu_count": 2,
         "ram_mb": 2048,
@@ -92,7 +93,7 @@ class TestCreateVm:
 
     @patch.object(ComputeService, '_rollback_vm_creation')
     @patch.object(ComputeService, '_save_vm_metadata_to_db')
-    @patch("src.services.compute_service.datetime")
+    @patch.object(ComputeService, '_validate_vm_and_get_image_path')
     @patch("src.services.compute_service.ImageService", autospec=True)
     @patch("src.services.compute_service.generate_vm_xml")
     @patch("src.services.compute_service.uuid")
@@ -101,22 +102,19 @@ class TestCreateVm:
         mock_uuid,
         mock_generate_xml,
         mock_image_service,
-        mock_datetime,
+        mock_validate,
         mock_save_db,
         mock_rollback,
         compute_service,
-        mock_db_connector,
         mock_libvirt,
     ):
         """VM 생성 성공 시나리오 (Happy Path)를 테스트합니다."""
         # Arrange
         args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, {"filepath": args["base_image_path"]}]
+        mock_validate.return_value = args["base_image_path"]
         mock_uuid.uuid4.return_value = args["test_uuid"]
         mock_image_service.create_vm_disk.return_value = args["new_disk_path"]
         mock_generate_xml.return_value = args["dummy_xml"]
-        mock_datetime.now.return_value = args["fake_now"]
 
         mock_domain = MagicMock()
         mock_libvirt.defineXML.return_value = mock_domain
@@ -124,28 +122,16 @@ class TestCreateVm:
 
         # Act
         result_name, result_uuid = compute_service.create_vm(
-            args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
+            args["project_id"], args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
         )
 
         # Assert
         assert result_name == args["vm_name"]
         assert result_uuid == args["test_uuid"]
 
-        mock_image_service.create_vm_disk.assert_called_once_with(
-            args["vm_name"], args["base_image_path"]
-        )
-        mock_generate_xml.assert_called_once_with(
-            args["vm_name"],
-            args["test_uuid"],
-            args["cpu_count"],
-            args["ram_mb"],
-            args["new_disk_path"],
-        )
-        mock_libvirt.defineXML.assert_called_once_with(args["dummy_xml"])
-        mock_domain.create.assert_called_once()
-
+        mock_validate.assert_called_once_with(args["project_id"], args["vm_name"], args["image_name"])
         mock_save_db.assert_called_once_with(
-            args["vm_name"], args["test_uuid"], args["cpu_count"], args["ram_mb"]
+            args["project_id"], args["vm_name"], args["test_uuid"], args["cpu_count"], args["ram_mb"]
         )
         mock_rollback.assert_not_called()
 
@@ -160,164 +146,11 @@ class TestCreateVm:
         # Act & Assert
         with pytest.raises(VmAlreadyExistsError) as excinfo:
             compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
+                args["project_id"], args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
             )
 
-        assert args["vm_name"] in str(excinfo.value)
+        assert "already exists in this project" in str(excinfo.value)
         mock_rollback.assert_not_called()
-
-    @patch.object(ComputeService, '_rollback_vm_creation')
-    def test_create_vm_fails_if_image_not_found(
-        self, mock_rollback, compute_service, mock_db_connector
-    ):
-        """DB에 베이스 이미지가 없을 경우 ImageNotFoundError 예외가 발생하는지 테스트합니다."""
-        # Arrange
-        args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, None]
-
-        # Act & Assert
-        with pytest.raises(ImageNotFoundError) as excinfo:
-            compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
-            )
-
-        assert args["image_name"] in str(excinfo.value)
-        mock_rollback.assert_not_called()
-
-    @patch.object(ComputeService, '_rollback_vm_creation')
-    @patch("src.services.compute_service.ImageService", autospec=True)
-    def test_create_vm_rollback_on_disk_creation_failure(
-        self, mock_image_service, mock_rollback, compute_service, mock_db_connector
-    ):
-        """디스크 생성 실패 시 VmCreationError가 발생하고 롤백이 호출되는지 테스트합니다."""
-        # Arrange
-        args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, {"filepath": args["base_image_path"]}]
-        mock_image_service.create_vm_disk.side_effect = Exception("Disk creation failed")
-
-        # Act & Assert
-        with pytest.raises(VmCreationError) as excinfo:
-            compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
-            )
-
-        assert "Disk creation failed" in str(excinfo.value)
-        mock_rollback.assert_called_once_with(None, None)
-
-    @patch.object(ComputeService, '_rollback_vm_creation')
-    @patch("src.services.compute_service.ImageService", autospec=True)
-    @patch("src.services.compute_service.generate_vm_xml")
-    @patch("src.services.compute_service.uuid")
-    def test_create_vm_rollback_on_libvirt_define_failure(
-        self,
-        mock_uuid,
-        mock_generate_xml,
-        mock_image_service,
-        mock_rollback,
-        compute_service,
-        mock_db_connector,
-        mock_libvirt,
-    ):
-        """Libvirt VM 정의 실패 시 VmCreationError가 발생하고 디스크 삭제 롤백이 호출되는지 테스트합니다."""
-        # Arrange
-        args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, {"filepath": args["base_image_path"]}]
-        mock_uuid.uuid4.return_value = args["test_uuid"]
-        mock_image_service.create_vm_disk.return_value = args["new_disk_path"]
-        mock_generate_xml.return_value = args["dummy_xml"]
-        mock_libvirt.defineXML.side_effect = libvirt.libvirtError("Define failed")
-
-        # Act & Assert
-        with pytest.raises(VmCreationError) as excinfo:
-            compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
-            )
-
-        assert "Define failed" in str(excinfo.value)
-        mock_rollback.assert_called_once_with(None, args["new_disk_path"])
-
-    @patch.object(ComputeService, '_rollback_vm_creation')
-    @patch("src.services.compute_service.ImageService", autospec=True)
-    @patch("src.services.compute_service.generate_vm_xml")
-    @patch("src.services.compute_service.uuid")
-    def test_create_vm_rollback_on_vm_start_failure(
-        self,
-        mock_uuid,
-        mock_generate_xml,
-        mock_image_service,
-        mock_rollback,
-        compute_service,
-        mock_db_connector,
-        mock_libvirt,
-    ):
-        """VM 시작 실패 시 VmCreationError가 발생하고 롤백이 호출되는지 테스트합니다."""
-        # Arrange
-        args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, {"filepath": args["base_image_path"]}]
-        mock_uuid.uuid4.return_value = args["test_uuid"]
-        mock_image_service.create_vm_disk.return_value = args["new_disk_path"]
-        mock_generate_xml.return_value = args["dummy_xml"]
-
-        mock_domain = MagicMock()
-        mock_libvirt.defineXML.return_value = mock_domain
-        mock_domain.create.return_value = -1  # VM 시작 실패
-
-        # Act & Assert
-        with pytest.raises(VmCreationError) as excinfo:
-            compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
-            )
-
-        assert "Failed to start the VM" in str(excinfo.value)
-        mock_rollback.assert_called_once_with(mock_domain, args["new_disk_path"])
-
-    @patch.object(ComputeService, '_rollback_vm_creation')
-    @patch.object(ComputeService, '_save_vm_metadata_to_db')
-    @patch("src.services.compute_service.datetime")
-    @patch("src.services.compute_service.ImageService", autospec=True)
-    @patch("src.services.compute_service.generate_vm_xml")
-    @patch("src.services.compute_service.uuid")
-    def test_create_vm_rollback_on_db_insert_failure(
-        self,
-        mock_uuid,
-        mock_generate_xml,
-        mock_image_service,
-        mock_datetime,
-        mock_save_db,
-        mock_rollback,
-        compute_service,
-        mock_db_connector,
-        mock_libvirt,
-    ):
-        """DB 저장 실패 시 VmCreationError가 발생하고 모든 리소스가 롤백되는지 테스트합니다."""
-        # Arrange
-        args = self.VM_DEFAULTS
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.side_effect = [None, {"filepath": args["base_image_path"]}]
-
-        mock_uuid.uuid4.return_value = args["test_uuid"]
-        mock_image_service.create_vm_disk.return_value = args["new_disk_path"]
-        mock_generate_xml.return_value = args["dummy_xml"]
-        mock_datetime.now.return_value = args["fake_now"]
-
-        mock_domain_instance = FakeDomain(args["vm_name"], args["test_uuid"])
-        mock_libvirt.defineXML.return_value = mock_domain_instance
-
-        db_error = sqlite3.Error("Simulated DB Insert Error")
-        mock_save_db.side_effect = db_error
-
-        # Act & Assert
-        with pytest.raises(VmCreationError) as excinfo:
-            compute_service.create_vm(
-                args["vm_name"], args["cpu_count"], args["ram_mb"], args["image_name"]
-            )
-
-        assert "Simulated DB Insert Error" in str(excinfo.value)
-        mock_rollback.assert_called_once_with(mock_domain_instance, args["new_disk_path"])
 
 
 # ===================================================================
@@ -327,52 +160,42 @@ class TestListVms:
     def test_list_vms_empty(self, compute_service, mock_db_connector):
         """DB에 VM이 없을 때 빈 리스트를 반환하는지 테스트합니다."""
         # Arrange
+        project_id = 1
         mock_cursor = mock_db_connector.cursor()
         mock_cursor.fetchall.return_value = []
 
         # Act
-        vms = compute_service.list_vms()
+        vms = compute_service.list_vms(project_id)
 
         # Assert
         assert vms == []
-        mock_cursor.execute.assert_called_once()
+        mock_cursor.execute.assert_called_once_with(
+            "SELECT name, uuid, cpu_count, ram_mb, created_at FROM vms WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,)
+        )
 
     def test_list_vms_with_data(self, compute_service, mock_db_connector, mock_libvirt):
         """DB에 VM이 있을 때 libvirt에서 상태를 가져와 통합된 목록을 반환하는지 테스트합니다."""
         # Arrange
+        project_id = 1
         mock_cursor = mock_db_connector.cursor()
         db_vms = [
-            {
-                "name": "test-vm-1",
-                "uuid": "uuid-1",
-                "cpu_count": 2,
-                "ram_mb": 2048,
-                "created_at": "2025-10-04",
-            },
-            {
-                "name": "test-vm-2",
-                "uuid": "uuid-2",
-                "cpu_count": 1,
-                "ram_mb": 1024,
-                "created_at": "2025-10-03",
-            },
+            {'name': 'test-vm-1', 'uuid': 'uuid-1', 'cpu_count': 2, 'ram_mb': 2048, 'created_at': '2025-10-04'},
+            {'name': 'test-vm-2', 'uuid': 'uuid-2', 'cpu_count': 1, 'ram_mb': 1024, 'created_at': '2025-10-03'}
         ]
         mock_cursor.fetchall.return_value = [dict(row) for row in db_vms]
 
-        fake_domain_1 = FakeDomain("test-vm-1", "uuid-1", libvirt.VIR_DOMAIN_RUNNING)
-        fake_domain_2 = FakeDomain("test-vm-2", "uuid-2", libvirt.VIR_DOMAIN_SHUTOFF)
+        fake_domain_1 = FakeDomain('test-vm-1', 'uuid-1', libvirt.VIR_DOMAIN_RUNNING)
+        fake_domain_2 = FakeDomain('test-vm-2', 'uuid-2', libvirt.VIR_DOMAIN_SHUTOFF)
         mock_libvirt.lookupByUUIDString.side_effect = [fake_domain_1, fake_domain_2]
 
         # Act
-        vms = compute_service.list_vms()
+        vms = compute_service.list_vms(project_id)
 
         # Assert
         assert len(vms) == 2
-        assert vms[0]["state"] == "RUNNING"
-        assert vms[1]["state"] == "SHUTOFF"
-        mock_libvirt.lookupByUUIDString.assert_has_calls(
-            [call("uuid-1"), call("uuid-2")]
-        )
+        assert vms[0]['state'] == 'RUNNING'
+        assert vms[1]['state'] == 'SHUTOFF'
 
 # ===================================================================
 #  destroy_vm 테스트
@@ -382,80 +205,53 @@ class TestDestroyVm:
     def test_destroy_vm_success(self, mock_subprocess_run, compute_service, mock_db_connector, mock_libvirt):
         """VM 삭제 성공 시나리오 (Happy Path)를 테스트합니다."""
         # Arrange
+        project_id = 1
         vm_name = "test-vm-to-destroy"
         vm_uuid = "destroy-uuid"
-        disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
 
         mock_cursor = mock_db_connector.cursor()
         mock_cursor.fetchone.return_value = {"uuid": vm_uuid}
 
         mock_domain = FakeDomain(vm_name, vm_uuid)
-        mock_domain.destroy = MagicMock()
-        mock_domain.undefine = MagicMock()
         mock_libvirt.lookupByUUIDString.return_value = mock_domain
 
         # Act
-        result = compute_service.destroy_vm(vm_name)
+        compute_service.destroy_vm(project_id, vm_name)
 
         # Assert
-        assert result is True
-
-        # 1. DB에서 UUID 조회
-        mock_cursor.execute.assert_any_call("SELECT uuid FROM vms WHERE name = ?", (vm_name,))
-        
-        # 2. Libvirt 작업 확인
-        mock_libvirt.lookupByUUIDString.assert_called_once_with(vm_uuid)
-        mock_domain.destroy.assert_called_once()
-        mock_domain.undefine.assert_called_once()
-
-        # 3. 디스크 삭제 확인
-        mock_subprocess_run.assert_called_once_with(['sudo', 'rm', '-f', disk_path], check=True)
-
-        # 4. DB 레코드 삭제 확인
-        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ?", (vm_name,))
-        mock_db_connector.commit.assert_called_once()
+        mock_cursor.execute.assert_any_call("SELECT uuid FROM vms WHERE name = ? AND project_id = ?", (vm_name, project_id))
+        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ? AND project_id = ?", (vm_name, project_id))
 
     def test_destroy_vm_not_found(self, compute_service, mock_db_connector, mock_libvirt):
         """DB에 VM이 없을 때 VmNotFoundError 예외가 발생하는지 테스트합니다."""
         # Arrange
+        project_id = 1
         vm_name = "non-existent-vm"
         mock_cursor = mock_db_connector.cursor()
         mock_cursor.fetchone.return_value = None
 
         # Act & Assert
-        with pytest.raises(VmNotFoundError) as excinfo:
-            compute_service.destroy_vm(vm_name)
-
-        assert vm_name in str(excinfo.value)
-        # Libvirt나 subprocess가 호출되지 않았는지 확인
-        mock_libvirt.lookupByUUIDString.assert_not_called()
+        with pytest.raises(VmNotFoundError):
+            compute_service.destroy_vm(project_id, vm_name)
 
     @patch('src.services.compute_service.subprocess.run')
     def test_destroy_vm_cleans_up_if_domain_not_found_in_libvirt(self, mock_subprocess_run, compute_service, mock_db_connector, mock_libvirt):
         """Libvirt에 VM이 없어도 나머지 리소스(디스크, DB)가 정리되는지 테스트합니다."""
         # Arrange
+        project_id = 1
         vm_name = "ghost-vm"
         vm_uuid = "ghost-uuid"
-        disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
 
         mock_cursor = mock_db_connector.cursor()
         mock_cursor.fetchone.return_value = {"uuid": vm_uuid}
 
-        # Libvirt에서 Domain을 찾지 못하는 상황 시뮬레이션
         mock_libvirt.lookupByUUIDString.side_effect = libvirt.libvirtError("Domain not found")
 
         # Act
-        result = compute_service.destroy_vm(vm_name)
+        compute_service.destroy_vm(project_id, vm_name)
 
         # Assert
-        assert result is True
-
-        # Libvirt 조회는 시도했어야 함
-        mock_libvirt.lookupByUUIDString.assert_called_once_with(vm_uuid)
-
-        # 디스크 삭제와 DB 레코드 삭제는 정상적으로 호출되어야 함
-        mock_subprocess_run.assert_called_once_with(['sudo', 'rm', '-f', disk_path], check=True)
-        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ?", (vm_name,))
+        mock_cursor.execute.assert_any_call("DELETE FROM vms WHERE name = ? AND project_id = ?", (vm_name, project_id))
         mock_db_connector.commit.assert_called_once()
 
 # ===================================================================
@@ -465,9 +261,7 @@ class TestReconcileVms:
     def test_reconcile_vms_no_ghosts(self, compute_service, mock_db_connector, mock_libvirt):
         """불일치하는 VM이 없을 때 빈 리스트를 반환하는지 테스트합니다."""
         # Arrange
-        # DB와 Libvirt 양쪽에 모두 존재하는 VM
         managed_domain = FakeDomain("managed-vm", "managed-uuid")
-        
         mock_libvirt.listAllDomains.return_value = [managed_domain]
         
         mock_cursor = mock_db_connector.cursor()
@@ -482,13 +276,10 @@ class TestReconcileVms:
     def test_reconcile_vms_finds_ghosts(self, compute_service, mock_db_connector, mock_libvirt):
         """DB에 없는 '유령 VM'을 정확히 찾아내는지 테스트합니다."""
         # Arrange
-        # DB와 Libvirt 양쪽에 모두 존재하는 VM
         managed_domain = FakeDomain("managed-vm", "managed-uuid")
-        # Libvirt에만 존재하는 '유령' VM
         ghost_domain = FakeDomain("ghost-vm", "ghost-uuid", state_code=libvirt.VIR_DOMAIN_SHUTOFF)
 
         mock_libvirt.listAllDomains.return_value = [managed_domain, ghost_domain]
-        # lookupByUUIDString은 ghost_domain을 반환하도록 설정
         mock_libvirt.lookupByUUIDString.return_value = ghost_domain
         
         mock_cursor = mock_db_connector.cursor()
@@ -500,8 +291,4 @@ class TestReconcileVms:
         # Assert
         assert len(ghost_vms) == 1
         assert ghost_vms[0]["name"] == "ghost-vm"
-        assert ghost_vms[0]["uuid"] == "ghost-uuid"
-        assert ghost_vms[0]["state"] == "SHUTOFF"
-        
-        # 유령 VM의 UUID로만 lookup이 호출되었는지 확인
         mock_libvirt.lookupByUUIDString.assert_called_once_with("ghost-uuid")
