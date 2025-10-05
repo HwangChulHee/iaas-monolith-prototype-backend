@@ -6,7 +6,11 @@ import sys
 import re
 
 from services.compute_service import ComputeService, VmNotFoundError, VmAlreadyExistsError, ImageNotFoundError
-from services.identity_service import IdentityService, ProjectCreationError, UserCreationError, ProjectNotFoundError, ProjectNotEmptyError, UserNotFoundError, RoleNotFoundError
+from services.identity_service import (
+    IdentityService, ProjectCreationError, UserCreationError, 
+    ProjectNotFoundError, ProjectNotEmptyError, UserNotFoundError, 
+    RoleNotFoundError, TokenInvalidError, AuthenticationError
+)
 
 # --------------------------------------------------------------------------
 ## 요청 처리 유틸리티 함수
@@ -23,21 +27,23 @@ def get_request_data(environ):
     except (ValueError, KeyError, json.JSONDecodeError):
         raise ValueError("Invalid or missing JSON body.")
 
-def get_project_id(environ):
-    """environ에서 X-Project-ID 헤더를 읽어와 project_id를 반환"""
-    project_id = environ.get('HTTP_X_PROJECT_ID')
-    if not project_id:
-        raise ValueError("Missing 'X-Project-ID' header.")
-    try:
-        return int(project_id)
-    except (ValueError, TypeError):
-        raise ValueError("'X-Project-ID' must be an integer.")
+def authorize_and_get_token_data(environ):
+    """X-Auth-Token을 검증하고, 유효하면 토큰 데이터를 반환"""
+    auth_token = environ.get('HTTP_X_AUTH_TOKEN')
+    if not auth_token:
+        raise TokenInvalidError("Missing 'X-Auth-Token' header.")
+    
+    identity = IdentityService()
+    token_data = identity.validate_token(auth_token)
+    return token_data
 
 def handle_exception(e):
     """예외 처리 및 응답 본문 생성"""
     error_message = str(e)
     
-    if isinstance(e, (VmNotFoundError, ProjectNotFoundError, UserNotFoundError, RoleNotFoundError)):
+    if isinstance(e, (TokenInvalidError, AuthenticationError)):
+        status = "401 Unauthorized"
+    elif isinstance(e, (VmNotFoundError, ProjectNotFoundError, UserNotFoundError, RoleNotFoundError)):
         status = "404 Not Found"
     elif isinstance(e, (ValueError, VmAlreadyExistsError, ImageNotFoundError, ProjectCreationError, UserCreationError, ProjectNotEmptyError)):
         status = "400 Bad Request"
@@ -56,12 +62,16 @@ def application(environ, start_response):
     method = environ.get("REQUEST_METHOD", "")
     
     routes = [
-        # Compute Service
+        # Compute Service (Protected)
         ('GET', r'^/v1/vms$', list_vms_handler),
         ('POST', r'^/v1/vms$', create_vm_handler),
         ('DELETE', r'^/v1/vms/([a-zA-Z0-9_-]+)$', delete_vm_handler),
+        
+        # Admin/Internal Actions
         ('POST', r'^/v1/actions/reconcile$', reconcile_vms_handler),
-        # Identity Service
+
+        # Identity Service & Auth
+        ('POST', r'^/v1/auth/tokens$', auth_tokens_handler),
         ('POST', r'^/v1/projects$', create_project_handler),
         ('GET', r'^/v1/projects$', list_projects_handler),
         ('GET', r'^/v1/projects/([0-9]+)$', get_project_handler),
@@ -103,15 +113,19 @@ def application(environ, start_response):
 ## 핸들러 함수
 # --------------------------------------------------------------------------
 
-# --- Compute Handlers ---
+# --- Compute Handlers (Protected) ---
 def list_vms_handler(environ):
-    project_id = get_project_id(environ)
+    token_data = authorize_and_get_token_data(environ)
+    project_id = token_data['project_id']
+    
     compute = ComputeService()
     vms = compute.list_vms(project_id)
     return '200 OK', json.dumps({'vms': vms})
 
 def create_vm_handler(environ):
-    project_id = get_project_id(environ)
+    token_data = authorize_and_get_token_data(environ)
+    project_id = token_data['project_id']
+
     request_data = get_request_data(environ)
     vm_name = request_data.get("name")
     cpu = request_data.get("cpu")
@@ -127,7 +141,9 @@ def create_vm_handler(environ):
     return '201 Created', response_body
 
 def delete_vm_handler(environ, vm_name):
-    project_id = get_project_id(environ)
+    token_data = authorize_and_get_token_data(environ)
+    project_id = token_data['project_id']
+
     compute = ComputeService()
     compute.destroy_vm(project_id, vm_name)
     response_body = json.dumps({"message": f"VM '{vm_name}' deleted."})

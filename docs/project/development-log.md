@@ -1,5 +1,32 @@
 # 개발 로그
 
+---
+
+### 🗓️ 2025년 10월 5일: IAM 서비스 MVP 및 인가(Authorization) 구현
+
+**목표**: 독립적인 `IdentityService`를 구현하고, 이를 통해 발급된 토큰으로 API 접근을 제어하는 인가 로직을 적용.
+
+**✅ 완료된 작업:**
+
+1.  **`IdentityService` 기능 구현**:
+    -   Project, User, Role에 대한 CRUD 메서드 구현.
+    -   사용자 자격증명 검증 후 프로젝트 범위의 토큰을 발급하는 `authenticate` 메서드 구현.
+
+2.  **단위 테스트 보완 및 통과**:
+    -   `make test-all`을 통해 `IdentityService`를 포함한 모든 서비스의 단위 테스트가 통과함을 확인.
+
+3.  **인가(Authorization) 로직 구현**:
+    -   `IdentityService`에 토큰의 유효성을 검증하는 `validate_token` 메서드 추가.
+    -   `app.py`를 리팩토링하여, VM 관련 API 핸들러가 `X-Auth-Token`을 받아 유효성을 검증하도록 수정.
+    -   이를 통해 토큰이 없으면 VM 관련 API를 호출할 수 없도록 API를 보호.
+
+**🤔 논의 및 결정:**
+
+-   `test.http`를 사용한 E2E 테스트는 추후 통합 테스트 단계에서 진행하기로 결정.
+-   다음 작업으로, 서비스 계층과 데이터 접근 계층을 분리(DAL/리포지토리 패턴 적용)하여 DB 의존성을 낮추기로 결정.
+
+---
+
 ## 2025-10-05 (저녁 4)
 
 #### ✅ 완료된 작업
@@ -161,5 +188,3 @@
 -   **완료**: Vagrant를 이용한 중첩 가상화 개발 환경 설계 및 구축 완료.
 -   **트러블슈팅**: `vagrant up` 시 `pip3 install libvirt-python` 실패 해결 (의존성 패키지 추가).
 -   **학습**: Vagrant, 중첩 가상화, WSGI, libvirt, IP 개념, IaaS 아키텍처, Terraform과 비교 등 학습.
-
-

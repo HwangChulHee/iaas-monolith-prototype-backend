@@ -27,9 +27,24 @@ class RoleNotFoundError(Exception):
 class AuthenticationError(Exception):
     pass
 
+class TokenInvalidError(Exception):
+    pass
+
 class IdentityService:
     # 단순화를 위해 클래스 변수로 토큰 캐시 사용 (실제 프로덕션에서는 Redis 등 사용)
     _token_cache = {}
+
+    def validate_token(self, token):
+        """토큰을 검증하고, 유효하면 토큰 데이터를 반환합니다."""
+        token_data = self._token_cache.get(token)
+        if not token_data:
+            raise TokenInvalidError("Token not found or invalid.")
+
+        if datetime.now() > token_data['expires_at']:
+            del self._token_cache[token]  # 만료된 토큰 삭제
+            raise TokenInvalidError("Token has expired.")
+            
+        return token_data
 
     def create_project(self, name):
         """새로운 프로젝트를 생성합니다."""

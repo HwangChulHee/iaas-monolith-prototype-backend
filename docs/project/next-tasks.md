@@ -1,56 +1,60 @@
-### 🚀 다음 작업 계획: ID & Access Management (IAM) 서비스 MVP 구현
+### 🚀 다음 작업 계획: 데이터 접근 계층(DAL) 분리 (리포지토리 패턴 적용)
 
-**목표**: 오픈스택의 Keystone을 모델로 삼아, 프로젝트와 사용자를 생성/조회/수정/삭제하고, 프로젝트 범위의 인증 토큰을 발급하는 독립적인 `IdentityService`를 구현합니다.
+**목표**: 서비스 계층(`services`)이 특정 데이터베이스 기술(현재 `sqlite3`)에 직접 의존하지 않도록 데이터 접근 계층(DAL)을 분리합니다. 이를 통해 향후 다른 DB로의 교체를 용이하게 하고, 단위 테스트를 단순화하며, MSA 전환을 위한 기반을 마련합니다.
 
-#### 1단계: `IdentityService` 메서드 구현
+#### 1단계: 리포지토리 인터페이스 정의
 
-`src/services/identity_service.py` 파일을 생성하고 다음 메서드들을 구현합니다.
+`src/repositories/interfaces.py` 파일을 생성하고, 각 도메인 객체(Project, User, VM 등)에 대한 추상 베이스 클래스(ABC) 기반의 인터페이스를 정의합니다.
 
--   **Project 관리**:
-    -   `create_project(name)`: 새 프로젝트 생성
-    -   `list_projects()`: 모든 프로젝트 목록 조회
-    -   `get_project(project_id)`: 특정 프로젝트 정보 조회
-    -   `delete_project(project_id)`: 프로젝트 삭제 (단, 프로젝트에 속한 VM 등 리소스가 없을 경우에만 가능하도록 안전장치 추가)
+-   `IProjectRepository(ABC)`
+-   `IUserRepository(ABC)`
+-   `IVMRepository(ABC)`
+-   ... (필요에 따라 추가)
 
--   **User 관리**:
-    -   `create_user(username, password)`: 새 사용자 생성 (회원가입)
-    -   `list_users()`: 모든 사용자 목록 조회
-    -   `get_user(user_id)`: 특정 사용자 정보 조회 (비밀번호 해시는 제외)
-    -   `delete_user(user_id)`: 사용자 삭제
+각 인터페이스는 `create`, `find_by_id`, `list_all`, `delete` 등 필요한 메서드를 추상 메서드(`@abstractmethod`)로 정의합니다.
 
--   **멤버십 및 역할(Role) 관리**:
-    -   `assign_role(user_id, project_id, role_name)`: 사용자를 프로젝트에 특정 역할로 추가
-    -   `revoke_role(user_id, project_id, role_name)`: 프로젝트에서 사용자 역할 제거
-    -   `list_project_members(project_id)`: 특정 프로젝트에 속한 모든 사용자 및 역할 목록 조회
+#### 2단계: SQLite 리포지토리 구현
 
--   **인증 (Authentication)**:
-    -   `authenticate(username, password, project_name)`: 자격증명 및 프로젝트 멤버십을 검증하고, 성공 시 범위가 지정된(scoped) 임시 토큰을 발급.
+`src/repositories/sqlite` 디렉토리를 생성하고, 위에서 정의한 인터페이스의 SQLite 구현체를 작성합니다.
 
-#### 2단계: IAM API 엔드포인트 구현
+-   `sqlite_project_repository.py` -> `SqliteProjectRepository(IProjectRepository)`
+-   `sqlite_user_repository.py` -> `SqliteUserRepository(IUserRepository)`
+-   `sqlite_vm_repository.py` -> `SqliteVMRepository(IVMRepository)`
 
-`app.py`를 리팩토링하여 `IdentityService`를 사용하는 API 엔드포인트를 추가/수정합니다.
+이 클래스들은 실제 SQL 쿼리를 실행하고 `DBConnector`를 사용하는 로직을 포함합니다.
 
--   **Projects API (`/v1/projects`)**:
-    -   `POST /`: `create_project`
-    -   `GET /`: `list_projects`
-    -   `GET /{project_id}`: `get_project`
-    -   `DELETE /{project_id}`: `delete_project`
+#### 3단계: 서비스 계층 리팩토링 (의존성 주입)
 
--   **Users API (`/v1/users`)**:
-    -   `POST /`: `create_user`
-    -   `GET /`: `list_users`
-    -   `GET /{user_id}`: `get_user`
-    -   `DELETE /{user_id}`: `delete_user`
+기존 서비스(`IdentityService`, `ComputeService`)를 리팩토링하여 더 이상 직접 DB에 접근하지 않도록 수정합니다.
 
--   **멤버십 API**:
-    -   `GET /v1/projects/{project_id}/users`: `list_project_members`
-    -   `PUT /v1/projects/{project_id}/users/{user_id}/roles/{role_name}`: `assign_role`
-    -   `DELETE /v1/projects/{project_id}/users/{user_id}/roles/{role_name}`: `revoke_role`
+-   서비스의 생성자(`__init__`)가 리포지토리 객체를 인자로 받도록 변경합니다. (의존성 주입)
+    ```python
+    # 예시: IdentityService
+    def __init__(self, user_repo: IUserRepository, project_repo: IProjectRepository):
+        self.user_repo = user_repo
+        self.project_repo = project_repo
+    ```
+-   서비스 내의 모든 DB 관련 코드를 리포지토리 메서드 호출로 변경합니다.
+    ```python
+    # 변경 전
+    # cursor.execute("INSERT INTO users ...")
 
--   **Auth API (`/v1/auth/tokens`)**:
-    -   `POST /`: `authenticate`
+    # 변경 후
+    # new_user = self.user_repo.create(username, password_hash)
+    ```
 
-#### 3단계: 단위 테스트 및 문서화
+#### 4단계: `app.py` 수정 (의존성 주입 설정)
 
--   `tests/services/test_identity_service.py` 파일을 새로 생성하여, `IdentityService`에 구현된 모든 메서드에 대한 단위 테스트를 작성합니다.
--   API의 사용법을 `test.http` 파일에 예시로 추가합니다.
+`app.py`의 핸들러 함수들에서 서비스 객체를 생성할 때, 구현된 리포지토리 객체를 주입해줍니다.
+
+```python
+# 변경 전
+# identity = IdentityService()
+
+# 변경 후
+# user_repo = SqliteUserRepository()
+# project_repo = SqliteProjectRepository()
+# identity = IdentityService(user_repo, project_repo)
+```
+
+이 단계를 통해 전체 애플리케이션이 새로운 아키텍처로 동작하도록 연결합니다.
