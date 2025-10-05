@@ -6,6 +6,7 @@ import sys
 import re
 
 from services.compute_service import ComputeService, VmNotFoundError, VmAlreadyExistsError, ImageNotFoundError
+from services.identity_service import IdentityService, ProjectCreationError, UserCreationError, ProjectNotFoundError, ProjectNotEmptyError, UserNotFoundError, RoleNotFoundError
 
 # --------------------------------------------------------------------------
 ## 요청 처리 유틸리티 함수
@@ -36,9 +37,9 @@ def handle_exception(e):
     """예외 처리 및 응답 본문 생성"""
     error_message = str(e)
     
-    if isinstance(e, VmNotFoundError):
+    if isinstance(e, (VmNotFoundError, ProjectNotFoundError, UserNotFoundError, RoleNotFoundError)):
         status = "404 Not Found"
-    elif isinstance(e, (ValueError, VmAlreadyExistsError, ImageNotFoundError)):
+    elif isinstance(e, (ValueError, VmAlreadyExistsError, ImageNotFoundError, ProjectCreationError, UserCreationError, ProjectNotEmptyError)):
         status = "400 Bad Request"
     else:
         status = "500 Internal Server Error"
@@ -55,10 +56,23 @@ def application(environ, start_response):
     method = environ.get("REQUEST_METHOD", "")
     
     routes = [
+        # Compute Service
         ('GET', r'^/v1/vms$', list_vms_handler),
         ('POST', r'^/v1/vms$', create_vm_handler),
         ('DELETE', r'^/v1/vms/([a-zA-Z0-9_-]+)$', delete_vm_handler),
         ('POST', r'^/v1/actions/reconcile$', reconcile_vms_handler),
+        # Identity Service
+        ('POST', r'^/v1/projects$', create_project_handler),
+        ('GET', r'^/v1/projects$', list_projects_handler),
+        ('GET', r'^/v1/projects/([0-9]+)$', get_project_handler),
+        ('DELETE', r'^/v1/projects/([0-9]+)$', delete_project_handler),
+        ('GET', r'^/v1/projects/([0-9]+)/users$', list_project_members_handler),
+        ('PUT', r'^/v1/projects/([0-9]+)/users/([0-9]+)/roles/([a-zA-Z]+)$', assign_role_handler),
+        ('DELETE', r'^/v1/projects/([0-9]+)/users/([0-9]+)/roles/([a-zA-Z]+)$', revoke_role_handler),
+        ('POST', r'^/v1/users$', create_user_handler),
+        ('GET', r'^/v1/users$', list_users_handler),
+        ('GET', r'^/v1/users/([0-9]+)$', get_user_handler),
+        ('DELETE', r'^/v1/users/([0-9]+)$', delete_user_handler),
     ]
 
     handler = None
@@ -89,6 +103,7 @@ def application(environ, start_response):
 ## 핸들러 함수
 # --------------------------------------------------------------------------
 
+# --- Compute Handlers ---
 def list_vms_handler(environ):
     project_id = get_project_id(environ)
     compute = ComputeService()
@@ -127,6 +142,73 @@ def reconcile_vms_handler(environ):
         "ghost_vms": ghost_vms
     })
     return '200 OK', response_body
+
+# --- Identity Handlers ---
+def create_project_handler(environ):
+    request_data = get_request_data(environ)
+    project_name = request_data.get("name")
+    if not project_name:
+        raise ValueError("Missing required parameter: name")
+    
+    identity = IdentityService()
+    project = identity.create_project(project_name)
+    return '201 Created', json.dumps(project)
+
+def list_projects_handler(environ):
+    identity = IdentityService()
+    projects = identity.list_projects()
+    return '200 OK', json.dumps({"projects": projects})
+
+def get_project_handler(environ, project_id):
+    identity = IdentityService()
+    project = identity.get_project(int(project_id))
+    return '200 OK', json.dumps(project)
+
+def delete_project_handler(environ, project_id):
+    identity = IdentityService()
+    identity.delete_project(int(project_id))
+    return '204 No Content', ''
+
+def create_user_handler(environ):
+    request_data = get_request_data(environ)
+    username = request_data.get("username")
+    password = request_data.get("password")
+    if not all([username, password]):
+        raise ValueError("Missing required parameters: username, password")
+    
+    identity = IdentityService()
+    user = identity.create_user(username, password)
+    return '201 Created', json.dumps(user)
+
+def list_users_handler(environ):
+    identity = IdentityService()
+    users = identity.list_users()
+    return '200 OK', json.dumps({"users": users})
+
+def get_user_handler(environ, user_id):
+    identity = IdentityService()
+    user = identity.get_user(int(user_id))
+    return '200 OK', json.dumps(user)
+
+def delete_user_handler(environ, user_id):
+    identity = IdentityService()
+    identity.delete_user(int(user_id))
+    return '204 No Content', ''
+
+def list_project_members_handler(environ, project_id):
+    identity = IdentityService()
+    members = identity.list_project_members(int(project_id))
+    return '200 OK', json.dumps({"members": members})
+
+def assign_role_handler(environ, project_id, user_id, role_name):
+    identity = IdentityService()
+    identity.assign_role(int(user_id), int(project_id), role_name)
+    return '204 No Content', ''
+
+def revoke_role_handler(environ, project_id, user_id, role_name):
+    identity = IdentityService()
+    identity.revoke_role(int(user_id), int(project_id), role_name)
+    return '204 No Content', ''
 
 # --------------------------------------------------------------------------
 ## 서버 실행
