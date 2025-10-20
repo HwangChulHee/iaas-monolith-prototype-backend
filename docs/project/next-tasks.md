@@ -1,60 +1,23 @@
-### 🚀 다음 작업 계획: 데이터 접근 계층(DAL) 분리 (리포지토리 패턴 적용)
+### 🚀 다음 작업 계획: 백엔드 안정화 (Backend Hardening)
 
-**목표**: 서비스 계층(`services`)이 특정 데이터베이스 기술(현재 `sqlite3`)에 직접 의존하지 않도록 데이터 접근 계층(DAL)을 분리합니다. 이를 통해 향후 다른 DB로의 교체를 용이하게 하고, 단위 테스트를 단순화하며, MSA 전환을 위한 기반을 마련합니다.
+**목표**: 현재 코드 베이스에 존재하는 주요 기술 부채를 해결하여, 향후 기능 추가 및 MSA 전환을 위한 안정적인 기반을 마련합니다. 이 작업들은 코드의 성능, 안정성, 배포 유연성을 크게 향상시킵니다.
 
-#### 1단계: 리포지토리 인터페이스 정의
+---
 
-`src/repositories/interfaces.py` 파일을 생성하고, 각 도메인 객체(Project, User, VM 등)에 대한 추상 베이스 클래스(ABC) 기반의 인터페이스를 정의합니다.
+#### 1순위: N+1 API 호출 문제 해결 (성능)
 
--   `IProjectRepository(ABC)`
--   `IUserRepository(ABC)`
--   `IVMRepository(ABC)`
--   ... (필요에 따라 추가)
+-   **문제**: `list_vms` 실행 시, DB에서 N개의 VM을 조회한 후, 각 VM의 실시간 상태를 얻기 위해 N번의 libvirt API를 추가로 호출하여 성능이 저하됩니다.
+-   **해결**: `libvirt`의 `listAllDomains()`와 같은 API를 사용해 모든 VM의 상태를 **한 번에** 가져온 후, DB 정보와 메모리상에서 조합하도록 `ComputeService` 및 관련 리포지토리를 리팩토링합니다.
+-   **기대 효과**: VM 개수가 많아져도 `GET /v1/vms` API의 응답 속도를 일정하게 유지할 수 있습니다.
 
-각 인터페이스는 `create`, `find_by_id`, `list_all`, `delete` 등 필요한 메서드를 추상 메서드(`@abstractmethod`)로 정의합니다.
+#### 2순위: Libvirt 연결 생명주기 관리 (안정성)
 
-#### 2단계: SQLite 리포지토리 구현
+-   **문제**: `ComputeService`의 `__del__` 소멸자를 통해 libvirt 연결을 해제하는 방식은 호출 시점이 불확실하여 리소스 누수의 위험이 있습니다.
+-   **해결**: `app.py`와 같이 애플리케이션의 생명주기를 관리하는 최상위 지점에서 libvirt 연결을 관리하도록 수정합니다. 서버 시작 시 연결을 생성하고, 서버 종료 시 명시적으로 연결을 해제하는 로직을 추가합니다.
+-   **기대 효과**: 리소스 누수를 방지하고 서버의 안정성을 높입니다.
 
-`src/repositories/sqlite` 디렉토리를 생성하고, 위에서 정의한 인터페이스의 SQLite 구현체를 작성합니다.
+#### 3순위: 설정값 외부 파일로 분리 (배포 유연성)
 
--   `sqlite_project_repository.py` -> `SqliteProjectRepository(IProjectRepository)`
--   `sqlite_user_repository.py` -> `SqliteUserRepository(IUserRepository)`
--   `sqlite_vm_repository.py` -> `SqliteVMRepository(IVMRepository)`
-
-이 클래스들은 실제 SQL 쿼리를 실행하고 `DBConnector`를 사용하는 로직을 포함합니다.
-
-#### 3단계: 서비스 계층 리팩토링 (의존성 주입)
-
-기존 서비스(`IdentityService`, `ComputeService`)를 리팩토링하여 더 이상 직접 DB에 접근하지 않도록 수정합니다.
-
--   서비스의 생성자(`__init__`)가 리포지토리 객체를 인자로 받도록 변경합니다. (의존성 주입)
-    ```python
-    # 예시: IdentityService
-    def __init__(self, user_repo: IUserRepository, project_repo: IProjectRepository):
-        self.user_repo = user_repo
-        self.project_repo = project_repo
-    ```
--   서비스 내의 모든 DB 관련 코드를 리포지토리 메서드 호출로 변경합니다.
-    ```python
-    # 변경 전
-    # cursor.execute("INSERT INTO users ...")
-
-    # 변경 후
-    # new_user = self.user_repo.create(username, password_hash)
-    ```
-
-#### 4단계: `app.py` 수정 (의존성 주입 설정)
-
-`app.py`의 핸들러 함수들에서 서비스 객체를 생성할 때, 구현된 리포지토리 객체를 주입해줍니다.
-
-```python
-# 변경 전
-# identity = IdentityService()
-
-# 변경 후
-# user_repo = SqliteUserRepository()
-# project_repo = SqliteProjectRepository()
-# identity = IdentityService(user_repo, project_repo)
-```
-
-이 단계를 통해 전체 애플리케이션이 새로운 아키텍처로 동작하도록 연결합니다.
+-   **문제**: `/var/lib/libvirt/images` 같은 주요 경로가 `ImageService` 내에 하드코딩되어 있어, 환경이 바뀔 때마다 코드를 수정해야 합니다.
+-   **해결**: `config.ini` 또는 `.env` 같은 외부 설정 파일을 도입합니다. 애플리케이션 시작 시 이 파일을 읽어 설정 값을 메모리에 로드하고, 각 서비스에서는 이 설정 객체를 주입받아 사용하도록 리팩토링합니다.
+-   **기대 효과**: 코드 수정 없이 설정 파일만으로 배포 환경을 변경할 수 있게 되어, 향후 MSA 및 컨테이너 환경에 대한 대응이 용이해집니다.

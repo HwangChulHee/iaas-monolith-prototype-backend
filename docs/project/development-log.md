@@ -2,6 +2,34 @@
 
 ---
 
+### 🗓️ 2025년 10월 20일: 아키텍처 현대화 및 코드 베이스 리팩토링
+
+**목표**: 기존의 직접적인 DB 접근 방식을 SQLAlchemy ORM과 리포지토리 패턴(Repository Pattern)을 사용하는 현대적인 계층형 아키텍처로 전면 리팩토링하여, 코드의 확장성, 테스트 용이성, 유지보수성을 극대화.
+
+**✅ 완료된 작업:**
+
+1.  **데이터 접근 계층(DAL) 재구축**:
+    -   `SQLAlchemy` ORM을 도입하고, 기존의 `sqlite3` 직접 접근 코드를 완전히 제거.
+    -   `리포지토리 패턴`을 `Compute`, `Identity`, `Image` 등 모든 서비스에 전면 적용하여 비즈니스 로직과 데이터 접근 로직을 분리.
+    -   `app.py`에 의존성 주입(DI) 컨테이너 로직과 요청별 세션 관리 라이프사이클을 구현.
+
+2.  **코드 구조 개선**:
+    -   `models`와 `repositories/interfaces`를 각각의 파일을 가진 패키지 구조로 리팩토링하여 명확성 및 확장성 확보.
+    -   산재해 있던 서비스별 예외 클래스를 `src/services/exceptions.py` 파일로 통합하여 중앙 관리.
+    -   더 이상 사용하지 않는 `db_connector.py` 파일을 삭제.
+
+3.  **개발 환경 및 문서화 개선**:
+    -   `Makefile`을 Self-documenting 방식으로 리팩토링하고, `lint`, `format`, `clean` 등 신규 개발용 명령어를 추가.
+    -   리팩토링된 계층형 아키텍처를 `architecture.md`에 다이어그램과 함께 상세히 기술.
+    -   모든 데이터 모델, 리포지토리 인터페이스, 서비스의 public 메서드에 표준화된 형식의 주석(docstring)을 추가 완료.
+
+4.  **테스트 코드 현대화**:
+    -   `DBConnector` 의존성을 제거하고, 모의(Mock) 리포지토리를 주입받도록 `test_compute_service.py` 전체를 재작성.
+    -   `test_identity_service.py`를 새로운 아키텍처에 맞춰 재작성하고 상세한 주석을 추가.
+    -   `make test-all`을 통해 리팩토링된 코드 베이스 전체의 테스트가 통과함을 확인.
+
+---
+
 ### 🗓️ 2025년 10월 5일: IAM 서비스 MVP 및 인가(Authorization) 구현
 
 **목표**: 독립적인 `IdentityService`를 구현하고, 이를 통해 발급된 토큰으로 API 접근을 제어하는 인가 로직을 적용.

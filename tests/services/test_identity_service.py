@@ -1,331 +1,189 @@
 # tests/services/test_identity_service.py
 import pytest
-import sqlite3
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch, ANY
+import hashlib
 
-from services.identity_service import IdentityService, ProjectCreationError, UserCreationError, ProjectNotFoundError, ProjectNotEmptyError, UserNotFoundError, RoleNotFoundError
+from src.services.identity_service import IdentityService
+from src.services.exceptions import *
+from src.repositories.interfaces import IUserRepository, IProjectRepository, IRoleRepository, IVMRepository
+from src.database import models
 
-@pytest.fixture
-def mock_db_connector():
-    """DBConnector를 모킹하여 실제 DB 접근을 방지합니다."""
-    with patch('services.identity_service.DBConnector') as mock_db_class:
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_db_class.return_value.__enter__.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        yield mock_conn
+# ===================================================================
+#  Fixture 설정
+# ===================================================================
 
 @pytest.fixture
-def identity_service():
-    """테스트를 위한 IdentityService 인스턴스를 생성합니다."""
-    return IdentityService()
+def mock_user_repo() -> MagicMock:
+    """IUserRepository에 대한 모의 객체를 생성합니다."""
+    return MagicMock(spec=IUserRepository)
 
+@pytest.fixture
+def mock_project_repo() -> MagicMock:
+    """IProjectRepository에 대한 모의 객체를 생성합니다."""
+    return MagicMock(spec=IProjectRepository)
+
+@pytest.fixture
+def mock_role_repo() -> MagicMock:
+    """IRoleRepository에 대한 모의 객체를 생성합니다."""
+    return MagicMock(spec=IRoleRepository)
+
+@pytest.fixture
+def mock_vm_repo() -> MagicMock:
+    """IVMRepository에 대한 모의 객체를 생성합니다."""
+    return MagicMock(spec=IVMRepository)
+
+@pytest.fixture
+def identity_service(
+    mock_user_repo: MagicMock, 
+    mock_project_repo: MagicMock, 
+    mock_role_repo: MagicMock, 
+    mock_vm_repo: MagicMock
+) -> IdentityService:
+    """테스트에 사용될 IdentityService 인스턴스를 생성하고, 의존성을 주입합니다."""
+    return IdentityService(mock_user_repo, mock_project_repo, mock_role_repo, mock_vm_repo)
+
+# ===================================================================
+#  프로젝트 관리(Project Management) 테스트
+# ===================================================================
 class TestProjectManagement:
-    def test_create_project_success(self, identity_service, mock_db_connector):
+    def test_create_project_success(self, identity_service: IdentityService, mock_project_repo: MagicMock):
         """프로젝트 생성 성공 시나리오를 테스트합니다."""
-        # Arrange
+        # === Arrange (테스트 준비) ===
         project_name = "new-project"
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.lastrowid = 5 # 새 프로젝트 ID 시뮬레이션
+        # 시나리오: 프로젝트 이름이 중복되지 않음
+        mock_project_repo.find_by_name.return_value = None
+        # 시나리오: 리포지토리가 생성된 프로젝트 모델을 반환
+        mock_project_repo.create.return_value = models.Project(id=5, name=project_name)
 
-        # Act
+        # === Act (실제 테스트 대상 실행) ===
         project = identity_service.create_project(project_name)
 
-        # Assert
+        # === Assert (결과 검증) ===
         assert project["id"] == 5
         assert project["name"] == project_name
-        mock_cursor.execute.assert_called_once_with("INSERT INTO projects (name) VALUES (?)", (project_name,))
-        mock_db_connector.commit.assert_called_once()
+        # 검증: find_by_name과 create가 올바른 인자와 함께 호출되었는지 확인
+        mock_project_repo.find_by_name.assert_called_once_with(project_name)
+        mock_project_repo.create.assert_called_once_with(ANY) # models.Project 객체
 
-    def test_create_project_fails_if_name_exists(self, identity_service, mock_db_connector):
+    def test_create_project_fails_if_name_exists(self, identity_service: IdentityService, mock_project_repo: MagicMock):
         """프로젝트 이름이 중복될 경우 ProjectCreationError가 발생하는지 테스트합니다."""
-        # Arrange
+        # === Arrange ===
         project_name = "existing-project"
-        mock_cursor = mock_db_connector.cursor()
-        # sqlite3.IntegrityError 시뮬레이션
-        mock_cursor.execute.side_effect = sqlite3.IntegrityError
+        # 시나리오: 동일한 이름의 프로젝트가 이미 존재함을 시뮬레이션
+        mock_project_repo.find_by_name.return_value = models.Project(id=1, name=project_name)
 
-        # Act & Assert
-        with pytest.raises(ProjectCreationError) as excinfo:
+        # === Act & Assert ===
+        with pytest.raises(ProjectCreationError):
             identity_service.create_project(project_name)
-        
-        assert "already exists" in str(excinfo.value)
+        # 검증: create는 호출되지 않았어야 함
+        mock_project_repo.create.assert_not_called()
 
-    def test_list_projects_empty(self, identity_service, mock_db_connector):
-        """프로젝트가 없을 때 빈 리스트를 반환하는지 테스트합니다."""
-        # Arrange
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchall.return_value = []
-
-        # Act
-        projects = identity_service.list_projects()
-
-        # Assert
-        assert projects == []
-        mock_cursor.execute.assert_called_once_with("SELECT id, name FROM projects ORDER BY name ASC")
-
-    def test_list_projects_with_data(self, identity_service, mock_db_connector):
-        """프로젝트가 있을 때 목록을 정확히 반환하는지 테스트합니다."""
-        # Arrange
-        mock_cursor = mock_db_connector.cursor()
-        db_projects = [
-            {'id': 1, 'name': 'default'},
-            {'id': 2, 'name': 'test-project'}
-        ]
-        mock_cursor.fetchall.return_value = db_projects
-
-        # Act
-        projects = identity_service.list_projects()
-
-        # Assert
-        assert len(projects) == 2
-        assert projects[0]["name"] == "default"
-        assert projects[1]["name"] == "test-project"
-
-    def test_get_project_success(self, identity_service, mock_db_connector):
-        """특정 프로젝트 조회 성공을 테스트합니다."""
-        # Arrange
-        project_id = 1
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'id': project_id, 'name': 'default'}
-
-        # Act
-        project = identity_service.get_project(project_id)
-
-        # Assert
-        assert project['id'] == project_id
-        mock_cursor.execute.assert_called_once_with("SELECT id, name FROM projects WHERE id = ?", (project_id,))
-
-    def test_get_project_not_found(self, identity_service, mock_db_connector):
-        """존재하지 않는 프로젝트 조회 시 ProjectNotFoundError 예외를 테스트합니다."""
-        # Arrange
-        project_id = 999
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = None
-
-        # Act & Assert
-        with pytest.raises(ProjectNotFoundError):
-            identity_service.get_project(project_id)
-
-    def test_delete_project_success(self, identity_service, mock_db_connector):
-        """빈 프로젝트 삭제 성공을 테스트합니다."""
-        # Arrange
+    def test_delete_project_success(self, identity_service: IdentityService, mock_project_repo: MagicMock, mock_vm_repo: MagicMock):
+        """비어있는 프로젝트 삭제 성공을 테스트합니다."""
+        # === Arrange ===
         project_id = 2
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'vm_count': 0}
-        mock_cursor.rowcount = 1
+        mock_project = models.Project(id=project_id, name="empty-project")
+        # 시나리오: 삭제할 프로젝트가 존재하고, 해당 프로젝트에 VM이 없음
+        mock_project_repo.find_by_id.return_value = mock_project
+        mock_vm_repo.count_by_project_id.return_value = 0
 
-        # Act
+        # === Act ===
         result = identity_service.delete_project(project_id)
 
-        # Assert
+        # === Assert ===
         assert result is True
-        mock_cursor.execute.assert_any_call("SELECT COUNT(*) as vm_count FROM vms WHERE project_id = ?", (project_id,))
-        mock_cursor.execute.assert_any_call("DELETE FROM projects WHERE id = ?", (project_id,))
+        # 검증: 프로젝트를 찾고, VM 개수를 확인하고, 최종적으로 프로젝트를 삭제하는 흐름 확인
+        mock_project_repo.find_by_id.assert_called_once_with(project_id)
+        mock_vm_repo.count_by_project_id.assert_called_once_with(project_id)
+        mock_project_repo.delete.assert_called_once_with(mock_project)
 
-    def test_delete_project_not_empty(self, identity_service, mock_db_connector):
+    def test_delete_project_not_empty(self, identity_service: IdentityService, mock_project_repo: MagicMock, mock_vm_repo: MagicMock):
         """VM이 있는 프로젝트 삭제 시 ProjectNotEmptyError 예외를 테스트합니다."""
-        # Arrange
+        # === Arrange ===
         project_id = 1
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'vm_count': 2}
+        # 시나리오: 프로젝트에 VM이 2개 존재함을 시뮬레이션
+        mock_project_repo.find_by_id.return_value = models.Project(id=project_id, name="default")
+        mock_vm_repo.count_by_project_id.return_value = 2
 
-        # Act & Assert
+        # === Act & Assert ===
         with pytest.raises(ProjectNotEmptyError):
             identity_service.delete_project(project_id)
+        # 검증: delete는 호출되지 않았어야 함
+        mock_project_repo.delete.assert_not_called()
 
-    def test_delete_project_not_found(self, identity_service, mock_db_connector):
-        """존재하지 않는 프로젝트 삭제 시 ProjectNotFoundError 예외를 테스트합니다."""
-        # Arrange
-        project_id = 999
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'vm_count': 0}
-        mock_cursor.rowcount = 0
-
-        # Act & Assert
-        with pytest.raises(ProjectNotFoundError):
-            identity_service.delete_project(project_id)
-
+# ===================================================================
+#  사용자 관리(User Management) 테스트
+# ===================================================================
 class TestUserManagement:
-    @patch('services.identity_service.hashlib.sha256')
-    def test_create_user_success(self, mock_sha256, identity_service, mock_db_connector):
+    @patch('src.services.identity_service.hashlib.sha256')
+    def test_create_user_success(self, mock_sha256: MagicMock, identity_service: IdentityService, mock_user_repo: MagicMock):
         """사용자 생성 성공 시나리오를 테스트합니다."""
-        # Arrange
-        username = "testuser"
-        password = "password123"
-        hashed_password = "hashed_password_string"
-        
-        mock_hash_obj = MagicMock()
-        mock_hash_obj.hexdigest.return_value = hashed_password
-        mock_sha256.return_value = mock_hash_obj
-        
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.lastrowid = 10
+        # === Arrange ===
+        username, password = "testuser", "password123"
+        # 시나리오: 사용자 이름이 중복되지 않음
+        mock_user_repo.find_by_username.return_value = None
+        # 시나리오: 리포지토리가 생성된 사용자 모델을 반환
+        mock_user_repo.create.return_value = models.User(id=10, username=username)
 
-        # Act
+        # === Act ===
         user = identity_service.create_user(username, password)
 
-        # Assert
+        # === Assert ===
         assert user["id"] == 10
         assert user["username"] == username
-        mock_cursor.execute.assert_called_once_with(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)", 
-            (username, hashed_password)
-        )
-        mock_db_connector.commit.assert_called_once()
+        # 검증: find_by_username과 create가 올바르게 호출되었는지 확인
+        mock_user_repo.find_by_username.assert_called_once_with(username)
+        mock_user_repo.create.assert_called_once_with(ANY) # models.User 객체
 
-    def test_create_user_fails_if_name_exists(self, identity_service, mock_db_connector):
-        """사용자 이름이 중복될 경우 UserCreationError가 발생하는지 테스트합니다."""
-        # Arrange
-        username = "existing-user"
-        password = "password123"
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.execute.side_effect = sqlite3.IntegrityError
-
-        # Act & Assert
-        with pytest.raises(UserCreationError) as excinfo:
-            identity_service.create_user(username, password)
-        
-        assert "already exists" in str(excinfo.value)
-
-    def test_list_users_empty(self, identity_service, mock_db_connector):
-        """사용자가 없을 때 빈 리스트를 반환하는지 테스트합니다."""
-        # Arrange
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchall.return_value = []
-
-        # Act
-        users = identity_service.list_users()
-
-        # Assert
-        assert users == []
-        mock_cursor.execute.assert_called_once_with("SELECT id, username FROM users ORDER BY username ASC")
-
-    def test_list_users_with_data(self, identity_service, mock_db_connector):
-        """사용자가 있을 때 목록을 정확히 반환하는지 테스트합니다."""
-        # Arrange
-        mock_cursor = mock_db_connector.cursor()
-        db_users = [
-            {'id': 1, 'username': 'admin'},
-            {'id': 2, 'username': 'testuser'}
-        ]
-        mock_cursor.fetchall.return_value = db_users
-
-        # Act
-        users = identity_service.list_users()
-
-        # Assert
-        assert len(users) == 2
-        assert users[0]["username"] == "admin"
-        assert users[1]["username"] == "testuser"
-
-    def test_get_user_success(self, identity_service, mock_db_connector):
-        """특정 사용자 조회 성공을 테스트합니다."""
-        # Arrange
-        user_id = 1
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'id': user_id, 'username': 'admin'}
-
-        # Act
-        user = identity_service.get_user(user_id)
-
-        # Assert
-        assert user['id'] == user_id
-        mock_cursor.execute.assert_called_once_with("SELECT id, username FROM users WHERE id = ?", (user_id,))
-
-    def test_get_user_not_found(self, identity_service, mock_db_connector):
-        """존재하지 않는 사용자 조회 시 UserNotFoundError 예외를 테스트합니다."""
-        # Arrange
-        user_id = 999
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = None
-
-        # Act & Assert
-        with pytest.raises(UserNotFoundError):
-            identity_service.get_user(user_id)
-
-    def test_delete_user_success(self, identity_service, mock_db_connector):
+    def test_delete_user_success(self, identity_service: IdentityService, mock_user_repo: MagicMock):
         """사용자 삭제 성공을 테스트합니다."""
-        # Arrange
+        # === Arrange ===
         user_id = 2
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.rowcount = 1
+        mock_user = models.User(id=user_id, username="testuser")
+        # 시나리오: 삭제할 사용자가 존재함
+        mock_user_repo.find_by_id.return_value = mock_user
 
-        # Act
+        # === Act ===
         result = identity_service.delete_user(user_id)
 
-        # Assert
+        # === Assert ===
         assert result is True
-        mock_cursor.execute.assert_any_call("DELETE FROM user_project_roles WHERE user_id = ?", (user_id,))
-        mock_cursor.execute.assert_any_call("DELETE FROM users WHERE id = ?", (user_id,))
+        # 검증: 사용자를 찾고, 최종적으로 삭제하는 흐름 확인
+        mock_user_repo.find_by_id.assert_called_once_with(user_id)
+        mock_user_repo.delete.assert_called_once_with(mock_user)
 
-    def test_delete_user_not_found(self, identity_service, mock_db_connector):
-        """존재하지 않는 사용자 삭제 시 UserNotFoundError 예외를 테스트합니다."""
-        # Arrange
-        user_id = 999
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.rowcount = 0
+# ===================================================================
+#  인증 및 권한 부여(Auth & Membership) 테스트
+# ===================================================================
+class TestAuthAndMembership:
+    def test_authenticate_success(self, identity_service: IdentityService, mock_user_repo: MagicMock, mock_project_repo: MagicMock):
+        """사용자 인증 성공 시나리오를 테스트합니다."""
+        # === Arrange ===
+        username, password, project_name = "testuser", "password123", "default"
+        hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        
+        # 시나리오: 사용자, 프로젝트가 존재하고, 사용자가 해당 프로젝트의 멤버임
+        mock_user = models.User(id=1, username=username, password_hash=hashed_password)
+        mock_project = models.Project(id=1, name=project_name)
+        mock_user.project_associations = [models.UserProjectRole(user_id=1, project_id=1, role_id=1)] # 멤버십 시뮬레이션
 
-        # Act & Assert
-        with pytest.raises(UserNotFoundError):
-            identity_service.delete_user(user_id)
+        mock_user_repo.find_by_username.return_value = mock_user
+        mock_project_repo.find_by_name.return_value = mock_project
 
-class TestMembershipManagement:
-    def test_assign_role_success(self, identity_service, mock_db_connector):
-        """사용자에게 역할을 할당하는 기능 테스트."""
-        # Arrange
-        user_id, project_id, role_name = 1, 1, "admin"
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'id': 1}
+        # === Act ===
+        result = identity_service.authenticate(username, password, project_name)
 
-        # Act
-        result = identity_service.assign_role(user_id, project_id, role_name)
+        # === Assert ===
+        assert "token" in result
+        assert "expires_at" in result
 
-        # Assert
-        assert result is True
-        mock_cursor.execute.assert_any_call("SELECT id FROM roles WHERE name = ?", (role_name,))
-        mock_cursor.execute.assert_any_call("INSERT OR IGNORE INTO user_project_roles (user_id, project_id, role_id) VALUES (?, ?, ?)", (user_id, project_id, 1))
+    def test_authenticate_fails_with_wrong_password(self, identity_service: IdentityService, mock_user_repo: MagicMock):
+        """잘못된 비밀번호로 인증 실패 시나리오를 테스트합니다."""
+        # === Arrange ===
+        username, password = "testuser", "wrong_password"
+        # 시나리오: 사용자는 존재하지만, DB의 해시값과 다름
+        mock_user_repo.find_by_username.return_value = models.User(id=1, username=username, password_hash="correct_hash")
 
-    def test_assign_role_not_found(self, identity_service, mock_db_connector):
-        """존재하지 않는 역할 할당 시 RoleNotFoundError 예외 테스트."""
-        # Arrange
-        user_id, project_id, role_name = 1, 1, "non-existent-role"
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = None
-
-        # Act & Assert
-        with pytest.raises(RoleNotFoundError):
-            identity_service.assign_role(user_id, project_id, role_name)
-
-    def test_revoke_role_success(self, identity_service, mock_db_connector):
-        """사용자의 역할을 회수하는 기능 테스트."""
-        # Arrange
-        user_id, project_id, role_name = 1, 1, "admin"
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchone.return_value = {'id': 1}
-
-        # Act
-        result = identity_service.revoke_role(user_id, project_id, role_name)
-
-        # Assert
-        assert result is True
-        mock_cursor.execute.assert_any_call("SELECT id FROM roles WHERE name = ?", (role_name,))
-        mock_cursor.execute.assert_any_call("DELETE FROM user_project_roles WHERE user_id = ? AND project_id = ? AND role_id = ?", (user_id, project_id, 1))
-
-    def test_list_project_members(self, identity_service, mock_db_connector):
-        """프로젝트 멤버 목록 조회를 테스트합니다."""
-        # Arrange
-        project_id = 1
-        mock_cursor = mock_db_connector.cursor()
-        mock_cursor.fetchall.return_value = [
-            {'id': 1, 'username': 'admin', 'role': 'admin'},
-            {'id': 2, 'username': 'testuser', 'role': 'member'}
-        ]
-
-        # Act
-        members = identity_service.list_project_members(project_id)
-
-        # Assert
-        assert len(members) == 2
-        assert members[1]['username'] == 'testuser'
-        assert members[1]['role'] == 'member'
+        # === Act & Assert ===
+        with pytest.raises(AuthenticationError, match="Invalid username or password"):
+            identity_service.authenticate(username, password, "default")

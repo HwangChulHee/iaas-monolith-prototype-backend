@@ -3,22 +3,5 @@
         "files": [
             ".gemini/GEMINI.md"
         ]
-    },
-    "mcpServers": {
-        "sequential-thinking": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-sequential-thinking"
-            ]
-        },
-        "memory-bank": {
-            "command": "npx",
-            "args": [
-                "@aakarsh-sasi/memory-bank-mcp",
-                "--mode",
-                "code"
-            ]
-        }
     }
 }

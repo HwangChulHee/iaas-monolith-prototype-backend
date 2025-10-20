@@ -1,153 +1,215 @@
-# src/services/compute_service.py
 import libvirt
-import sqlite3
 import uuid
-from datetime import datetime
 import os
 import subprocess
+from datetime import datetime
 
-from database.db_connector import DBConnector
-from utils.vm_xml_generator import generate_vm_xml
-from services.image_service import ImageService
-
-class VmNotFoundError(Exception):
-    """VM을 찾을 수 없을 때 발생하는 사용자 정의 예외"""
-    pass
-
-class VmAlreadyExistsError(Exception):
-    """VM 이름이 이미 존재할 때 발생하는 예외"""
-    pass
-
-class ImageNotFoundError(Exception):
-    """베이스 이미지를 찾을 수 없을 때 발생하는 예외"""
-    pass
-
-class VmCreationError(Exception):
-    """VM 생성 과정(디스크, libvirt 등)에서 오류 발생 시 사용하는 예외"""
-    pass
-
+from src.database import models
+from src.repositories.interfaces import IVMRepository
+from src.utils.vm_xml_generator import generate_vm_xml
+from src.services.image_service import ImageService
+from src.services.exceptions import (
+    VmNotFoundError,
+    VmAlreadyExistsError,
+    VmCreationError,
+)
 
 class ComputeService:
-    def __init__(self, uri="qemu:///system"):
-        self.conn = libvirt.open(uri)
-        if self.conn is None:
+    def __init__(self, vm_repo: IVMRepository, image_service: ImageService, uri="qemu:///system"):
+        self.vm_repo = vm_repo
+        self.image_service = image_service # ImageService도 의존성으로 주입
+        try:
+            self.conn = libvirt.open(uri)
+        except libvirt.libvirtError:
+            # TODO: 로깅 시스템 도입 후 로그 남기기
             raise ConnectionError("Failed to open connection to the hypervisor.")
 
-    def create_vm(self, project_id, vm_name, cpu_count, ram_mb, image_name):
+    def create_vm(self, project_id: int, vm_name: str, cpu_count: int, ram_mb: int, image_name: str):
         """
-        VM 생성의 전체 과정을 관리하며, 실패 시 생성된 리소스를 정리하는 롤백 로직을 포함합니다.
+        새로운 가상 머신을 생성하고 시작합니다.
+
+        VM 생성 전체 과정을 관리하며, 디스크 생성, libvirt VM 정의, VM 시작,
+        DB 메타데이터 저장을 포함합니다. 실패 시 생성된 리소스를 정리하는 롤백 로직이 동작합니다.
+
+        Args:
+            project_id: VM이 속할 프로젝트의 ID.
+            vm_name: 생성할 VM의 이름.
+            cpu_count: 할당할 CPU 코어 수.
+            ram_mb: 할당할 RAM 크기 (MB).
+            image_name: VM을 생성할 기반 이미지의 이름.
+
+        Returns:
+            생성된 VM의 이름과 UUID를 담은 튜플 (vm_name, vm_uuid).
+
+        Raises:
+            ImageNotFoundError: 요청된 이미지를 찾을 수 없을 때.
+            VmAlreadyExistsError: 동일한 이름의 VM이 프로젝트 내에 이미 존재할 때.
+            VmCreationError: VM 생성 과정(libvirt, 디스크 등) 중 오류가 발생했을 때.
         """
-        source_filepath = self._validate_vm_and_get_image_path(project_id, vm_name, image_name)
+        # 1. 요청 유효성 검사 (VM 중복, 이미지 존재 여부)
+        source_filepath = self.image_service.validate_image_and_get_path(image_name)
+        if self.vm_repo.find_by_name_and_project_id(vm_name, project_id):
+            raise VmAlreadyExistsError(f"VM name '{vm_name}' already exists in this project.")
 
         vm_disk_filepath = None
         domain = None
         vm_uuid = str(uuid.uuid4())
 
         try:
-            # 1. VM 디스크 생성
-            vm_disk_filepath = ImageService.create_vm_disk(vm_name, source_filepath)
+            # 2. VM 디스크 생성
+            vm_disk_filepath = self.image_service.create_vm_disk(vm_name, source_filepath)
 
-            # 2. VM XML 설정 생성
+            # 3. VM XML 설정 생성 및 Libvirt VM 정의
             xml_config = generate_vm_xml(vm_name, vm_uuid, cpu_count, ram_mb, vm_disk_filepath)
-
-            # 3. Libvirt에 VM 정의
             domain = self.conn.defineXML(xml_config)
 
             # 4. VM 시작
             if domain.create() < 0:
                 raise VmCreationError("Failed to start the VM after definition.")
 
-            # 5. DB에 VM 메타데이터 저장
-            self._save_vm_metadata_to_db(project_id, vm_name, vm_uuid, cpu_count, ram_mb)
+            # 5. DB에 VM 메타데이터 저장 (리포지토리 사용)
+            new_vm = models.VM(
+                name=vm_name,
+                uuid=vm_uuid,
+                state="RUNNING",
+                cpu_count=cpu_count,
+                ram_mb=ram_mb,
+                project_id=project_id
+            )
+            self.vm_repo.create(new_vm)
 
             return vm_name, vm_uuid
 
-        except (libvirt.libvirtError, VmCreationError, sqlite3.Error, Exception) as e:
+        except (libvirt.libvirtError, VmCreationError, Exception) as e:
             print(f"VM '{vm_name}' creation failed: {e}. Starting rollback...")
             self._rollback_vm_creation(domain, vm_disk_filepath)
-            # 원래 예외를 새로운 예외로 감싸서 추가 정보를 제공
             raise VmCreationError(f"Failed to create VM '{vm_name}'. Original error: {e}") from e
 
-    def _validate_vm_and_get_image_path(self, project_id, vm_name, image_name):
-        """VM 생성 전 DB에서 유효성을 검사하고, 베이스 이미지 경로를 반환합니다."""
-        with DBConnector() as conn:
-            cursor = conn.cursor()
-            # VM 이름은 프로젝트 내에서만 고유하면 됨
-            cursor.execute("SELECT name FROM vms WHERE name = ? AND project_id = ?", (vm_name, project_id))
-            if cursor.fetchone():
-                raise VmAlreadyExistsError(f"VM name '{vm_name}' already exists in this project.")
-            
-            cursor.execute("SELECT filepath FROM images WHERE name = ?", (image_name,))
-            image_row = cursor.fetchone()
-            if not image_row:
-                raise ImageNotFoundError(f"Image '{image_name}' not found.")
-            
-            return image_row["filepath"]
-
-    def _save_vm_metadata_to_db(self, project_id, vm_name, vm_uuid, cpu_count, ram_mb):
-        """VM 메타데이터를 데이터베이스에 저장합니다."""
-        try:
-            with DBConnector() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO vms (name, uuid, state, cpu_count, ram_mb, project_id, created_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (vm_name, vm_uuid, "running", cpu_count, ram_mb, project_id, datetime.now()),
-                )
-                conn.commit()
-        except sqlite3.Error as db_e:
-            # 이 예외는 create_vm의 메인 try-except 블록에서 처리됩니다.
-            raise db_e
-
     def _rollback_vm_creation(self, domain, disk_path):
-        """VM 생성 실패 시 관련 리소스를 정리합니다."""
-        # 롤백 1: Libvirt VM 종료 및 정의 제거
         if domain:
             try:
                 if domain.isActive():
                     domain.destroy()
                 domain.undefine()
-                print(f"Rollback: Libvirt domain for '{domain.name()}' cleaned up.")
             except libvirt.libvirtError as e:
                 print(f"Rollback Warning: Failed to clean up libvirt domain: {e}")
 
-        # 롤백 2: 생성된 VM 디스크 파일 삭제
         if disk_path and os.path.exists(disk_path):
-            try:
-                ImageService.delete_vm_disk(disk_path)
-                print(f"Rollback: VM disk '{disk_path}' deleted.")
-            except Exception as e:
-                print(f"Rollback Warning: Failed to delete VM disk '{disk_path}': {e}")
+            self.image_service.delete_vm_disk(disk_path)
 
-    def list_vms(self, project_id):
-        """특정 프로젝트에 속한 VM 목록을 DB 기반으로 조회하고, 실시간 상태를 통합하여 반환합니다."""
-        vms_from_db = []
-        with DBConnector() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name, uuid, cpu_count, ram_mb, created_at FROM vms WHERE project_id = ? ORDER BY created_at DESC",
-                (project_id,)
-            )
-            vms_from_db = [dict(row) for row in cursor.fetchall()]
+    def list_vms(self, project_id: int):
+        """
+        특정 프로젝트에 속한 VM 목록을 조회하고, 하이퍼바이저에서 실시간 상태를 가져옵니다.
 
-        # 실시간 정보를 포함할 최종 VM 목록
+        DB에 저장된 VM 정보와 libvirt를 통해 확인한 실시간 상태를 조합하여 반환합니다.
+        만약 VM이 하이퍼바이저에 존재하지 않으면 상태는 'UNKNOWN'으로 표시됩니다.
+
+        Args:
+            project_id: 조회할 VM들이 속한 프로젝트의 ID.
+
+        Returns:
+            VM의 상세 정보(이름, UUID, CPU, RAM, 생성일, 상태 등)가 포함된
+            딕셔너리의 리스트.
+        """
+        vms_from_db = self.vm_repo.list_by_project_id(project_id)
+        
         vms_with_realtime_state = []
-        for vm_data in vms_from_db:
+        for vm in vms_from_db:
+            vm_data = {
+                "name": vm.name,
+                "uuid": vm.uuid,
+                "cpu_count": vm.cpu_count,
+                "ram_mb": vm.ram_mb,
+                "created_at": vm.created_at.isoformat()
+            }
             try:
-                domain = self.conn.lookupByUUIDString(vm_data["uuid"])
+                domain = self.conn.lookupByUUIDString(vm.uuid)
                 state_code, _, _, _, _ = domain.info()
                 vm_data["state"] = self._map_vm_state(state_code)
             except libvirt.libvirtError:
                 vm_data["state"] = "UNKNOWN"
-            
             vms_with_realtime_state.append(vm_data)
             
         return vms_with_realtime_state
 
+    def destroy_vm(self, project_id: int, vm_name: str):
+        """
+        특정 VM을 찾아 모든 관련 리소스를 정리하고 데이터베이스에서 삭제합니다.
+
+        libvirt 도메인 종료 및 정의 해제, 연결된 디스크 파일 삭제, DB 기록 삭제를
+        포함합니다. 일부 리소스 정리에 실패하더라도 DB 기록은 반드시 삭제를 시도합니다.
+
+        Args:
+            project_id: 삭제할 VM이 속한 프로젝트의 ID.
+            vm_name: 삭제할 VM의 이름.
+
+        Returns:
+            성공적으로 삭제되었으면 True를 반환합니다.
+
+        Raises:
+            VmNotFoundError: 해당 프로젝트에서 VM을 찾을 수 없을 때.
+        """
+        vm_to_delete = self.vm_repo.find_by_name_and_project_id(vm_name, project_id)
+        if not vm_to_delete:
+            raise VmNotFoundError(f"VM '{vm_name}' not found in project '{project_id}'.")
+
+        try:
+            # Libvirt 리소스 정리
+            try:
+                domain = self.conn.lookupByUUIDString(vm_to_delete.uuid)
+                if domain.isActive():
+                    domain.destroy()
+                domain.undefine()
+            except libvirt.libvirtError as e:
+                print(f"Libvirt Warning: Failed to clean up domain for VM '{vm_name}': {e}. Proceeding cleanup.")
+
+            # 디스크 리소스 정리
+            self.image_service.delete_vm_disk_by_name(vm_name)
+
+        finally:
+            # 최종적으로 DB에서 VM 기록 삭제
+            self.vm_repo.delete(vm_to_delete)
+            print(f"DB Info: Record for VM '{vm_name}' in project '{project_id}' deleted.")
+
+        return True
+
+    def reconcile_vms(self):
+        """
+        하이퍼바이저와 DB의 상태를 비교하여 불일치하는 VM을 찾아냅니다.
+
+        DB에는 없지만 libvirt에만 존재하는 '유령(Ghost) VM'의 목록을 반환합니다.
+        이는 시스템 외부에서 비정상적으로 생성되었거나, DB 오류로 기록이 누락된 VM일 수 있습니다.
+
+        Returns:
+            유령 VM의 정보(이름, UUID, 상태)가 포함된 딕셔너리의 리스트.
+
+        Raises:
+            ConnectionError: libvirt에 연결할 수 없을 때.
+        """
+        try:
+            all_domains = self.conn.listAllDomains(0)
+            libvirt_uuids = {domain.UUIDString() for domain in all_domains}
+        except libvirt.libvirtError as e:
+            raise ConnectionError(f"Error fetching domains from libvirt: {e}")
+
+        db_uuids = set(self.vm_repo.list_all_uuids())
+        ghost_vm_uuids = libvirt_uuids - db_uuids
+
+        ghost_vms = []
+        for uuid in ghost_vm_uuids:
+            try:
+                domain = self.conn.lookupByUUIDString(uuid)
+                ghost_vms.append({
+                    "name": domain.name(),
+                    "uuid": uuid,
+                    "state": self._map_vm_state(domain.info()[0])
+                })
+            except libvirt.libvirtError:
+                continue
+        
+        return ghost_vms
+
     def _map_vm_state(self, state_code):
-        """libvirt의 정수 상태 코드를 사람이 읽을 수 있는 문자열로 변환합니다."""
         state_map = {
             libvirt.VIR_DOMAIN_NOSTATE: 'NOSTATE',
             libvirt.VIR_DOMAIN_RUNNING: 'RUNNING',
@@ -160,91 +222,9 @@ class ComputeService:
         }
         return state_map.get(state_code, 'UNKNOWN')
 
-    def destroy_vm(self, project_id, vm_name):
-        """특정 프로젝트에 속한 VM의 모든 리소스를 정리하고 DB에서 기록을 삭제합니다."""
-        safe_vm_name = os.path.basename(vm_name)
-        if safe_vm_name != vm_name:
-            raise ValueError(f"Invalid characters in VM name: '{vm_name}'")
-
-        # 1. DB에서 해당 프로젝트에 속한 VM 정보 조회
-        with DBConnector() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT uuid FROM vms WHERE name = ? AND project_id = ?", (safe_vm_name, project_id))
-            db_record = cursor.fetchone()
-            if db_record is None:
-                raise VmNotFoundError(f"VM '{safe_vm_name}' not found in project '{project_id}'.")
-            vm_uuid = db_record["uuid"]
-
-        try:
-            # 2. Libvirt 리소스 정리 시도
-            try:
-                domain = self.conn.lookupByUUIDString(vm_uuid)
-                if domain.isActive():
-                    domain.destroy()
-                domain.undefine()
-                print(f"Libvirt Info: Domain for VM '{safe_vm_name}' cleaned up.")
-            except libvirt.libvirtError as e:
-                print(f"Libvirt Warning: Failed to clean up domain for VM '{safe_vm_name}': {e}. Proceeding cleanup.")
-
-            # 3. 디스크 리소스 정리 시도
-            disk_filepath = os.path.join("/var/lib/libvirt/images", f"{safe_vm_name}.qcow2")
-            try:
-                subprocess.run(['sudo', 'rm', '-f', disk_filepath], check=True)
-                print(f"Disk Info: Disk for VM '{safe_vm_name}' deleted.")
-            except subprocess.CalledProcessError as e:
-                print(f"Disk Cleanup Warning: Failed to delete disk '{disk_filepath}': {e}. Proceeding cleanup.")
-        
-        finally:
-            # 4. 최종적으로 DB에서 VM 기록 삭제
-            with DBConnector() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM vms WHERE name = ? AND project_id = ?", (safe_vm_name, project_id))
-                conn.commit()
-                print(f"DB Info: Record for VM '{safe_vm_name}' in project '{project_id}' deleted.")
-
-        return True
-
-    def reconcile_vms(self):
-        """
-        Libvirt와 DB의 VM 목록을 비교하여 불일치하는 '유령 VM'을 찾아냅니다.
-        (DB에는 없지만 Libvirt에는 존재하는 VM)
-        """
-        # 1. Libvirt에서 모든 VM의 UUID 조회
-        try:
-            all_domains = self.conn.listAllDomains(0)
-            libvirt_uuids = {domain.UUIDString() for domain in all_domains}
-        except libvirt.libvirtError as e:
-            print(f"Error fetching domains from libvirt: {e}")
-            return []
-
-        # 2. DB에서 모든 VM의 UUID 조회
-        db_uuids = set()
-        with DBConnector() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT uuid FROM vms")
-            rows = cursor.fetchall()
-            db_uuids = {row['uuid'] for row in rows}
-
-        # 3. 두 목록을 비교하여 '유령 VM'의 UUID를 식별
-        ghost_vm_uuids = libvirt_uuids - db_uuids
-
-        # 4. '유령 VM'의 상세 정보 (이름, UUID)를 조회하여 반환
-        ghost_vms = []
-        if ghost_vm_uuids:
-            for uuid in ghost_vm_uuids:
-                try:
-                    domain = self.conn.lookupByUUIDString(uuid)
-                    ghost_vms.append({
-                        "name": domain.name(),
-                        "uuid": uuid,
-                        "state": self._map_vm_state(domain.info()[0])
-                    })
-                except libvirt.libvirtError:
-                    # UUID로 조회가 실패하는 경우는 거의 없지만, 방어 코드 추가
-                    continue
-        
-        return ghost_vms
-
     def __del__(self):
         if self.conn:
-            self.conn.close()
+            try:
+                self.conn.close()
+            except libvirt.libvirtError:
+                pass # 이미 닫혔거나 할 수 없는 경우 무시
